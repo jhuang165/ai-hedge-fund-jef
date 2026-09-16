@@ -116,7 +116,7 @@ Thin clients over the engine — pick the surface, the core stays the same.
 | Item | Status |
 |------|--------|
 | Data layer — pluggable `DataClient` protocol + provider client | ✅ |
-| Alternative data connectors — satellite imagery, web & social-media search, app-download trends, shipping data, etc. | ⬜ |
+| Alternative data connectors — satellite imagery, web & social-media search, app-download trends, shipping data, etc. | 🚧 (web search ships via `aihf research`: a `SearchClient` protocol + Tavily client behind a read-only, cited stock diagnosis; feeding search into an alpha model is next) |
 
 ## Contributing
 

@@ -17,6 +17,11 @@ Usage::
         Backtest the mandate: run_cycle looped over history at the mandate's
         rebalance cadence; the full result JSON prints to stdout.
 
+    aihf research AAPL
+        Read-only web-search research on one ticker: prints a cited
+        bullish/neutral/bearish diagnosis. Does not touch mandates,
+        strategies, or backtesting — see hedge_fund/research/.
+
 A mandate is the desk — strategies, staff, risk, capital, cadence — and never
 names tickers; --tickers says what to point it at for this run.
 
@@ -29,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 from datetime import date as _date
 from datetime import timedelta
 from pathlib import Path
@@ -39,13 +45,21 @@ from hedge_fund.backtesting import backtest_fund
 from hedge_fund.brokers import SimBroker
 from hedge_fund.data import CachedDataClient, FDClient
 from hedge_fund.fund import Fund, load_spec, normalize_universe
-from hedge_fund.paths import ensure_mandates_dir
+from hedge_fund.paths import ENV_PATH, ensure_mandates_dir
 from hedge_fund.pipeline import run_cycle
+from hedge_fund.research.models import ResearchReport
 from hedge_fund.tui.keys import apply_credentials
 from hedge_fund.tui.shared import _BACKTEST_WEEKS
 
 
 def main() -> None:
+    # A mandate path is always a .yaml file, so this can't collide with a
+    # real mandate. Handled before the main parser so the existing
+    # aihf / aihf <mandate.yaml> ... behaviors stay byte-for-byte unchanged.
+    if len(sys.argv) > 1 and sys.argv[1] == "research":
+        _research_main(sys.argv[2:])
+        return
+
     apply_credentials()
     ensure_mandates_dir()
     parser = argparse.ArgumentParser(
@@ -53,6 +67,10 @@ def main() -> None:
         description="Run the AI hedge fund. No arguments: launch the "
         "interactive app. With a mandate YAML: run one cycle and print the "
         "record.",
+        epilog="other commands:\n"
+        "  aihf research TICKER   read-only web-search diagnosis of one stock\n"
+        "                         (see `aihf research --help`)",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("mandate", nargs="?",
                         help="path to a fund spec YAML, e.g. "
@@ -165,6 +183,78 @@ def main() -> None:
     )
     if record.skipped:
         console.print(f"[dim]skipped: {', '.join(s.ticker for s in record.skipped)}[/]")
+
+
+def _research_main(argv: list[str]) -> None:
+    apply_credentials()
+    parser = argparse.ArgumentParser(
+        prog="aihf research",
+        description="Read-only web-search research on one ticker: a cited "
+        "bullish/neutral/bearish diagnosis. Does not touch mandates, "
+        "strategies, or backtesting.",
+    )
+    parser.add_argument("ticker", help="e.g. AAPL")
+    parser.add_argument(
+        "--model",
+        help="LLM to reason with, e.g. claude-opus-5 (default: "
+        "HEDGE_FUND_LLM_MODEL env, else the built-in default)",
+    )
+    parser.add_argument(
+        "--date",
+        default=_date.today().isoformat(),
+        help="as-of date YYYY-MM-DD (default: today)",
+    )
+    parser.add_argument("--out", help="also write the report JSON to this file")
+    args = parser.parse_args(argv)
+
+    # Check the search key up front. Without it every query comes back 401
+    # and the user sees four stacked HTTP errors instead of the one sentence
+    # that actually fixes it.
+    if not os.environ.get("TAVILY_API_KEY"):
+        raise SystemExit(
+            "TAVILY_API_KEY is not set — `aihf research` needs a web-search key.\n"
+            "Get one at https://tavily.com/ and either export it or add it to "
+            f"{ENV_PATH}:\n"
+            "    TAVILY_API_KEY=your-tavily-api-key"
+        )
+
+    from hedge_fund.llm import make_llm
+    from hedge_fund.research import TavilyClient, diagnose
+
+    llm = make_llm(args.model)
+    console = Console(stderr=True)
+    ticker = args.ticker.strip().upper()
+
+    with FDClient() as raw, TavilyClient() as search:
+        fd = CachedDataClient(raw)
+        with console.status(
+            f"[cyan]researching {ticker} as of {args.date}…", spinner="dots",
+        ):
+            report = diagnose(ticker, args.date, fd, search, llm)
+
+    print(report.model_dump_json(indent=2))
+    if args.out:
+        Path(args.out).write_text(report.model_dump_json(indent=2))
+
+    _print_research_summary(console, report)
+
+
+def _print_research_summary(console: Console, report: ResearchReport) -> None:
+    color = {"bullish": "green", "bearish": "red", "neutral": "yellow"}[report.signal]
+    console.print(
+        f"[bold]{report.ticker}[/] @ {report.as_of}  ·  "
+        f"[{color}]{report.signal.upper()}[/] ({report.confidence:.0f}% confidence)  ·  "
+        f"model {report.model}"
+    )
+    console.print(f"[dim]{report.thesis.splitlines()[0] if report.thesis else ''}[/]")
+    console.print(
+        f"[dim]{len(report.catalysts)} catalysts  ·  {len(report.risks)} risks  ·  "
+        f"{len(report.sources)} sources across {len(report.queries)} queries[/]"
+    )
+    for i, s in enumerate(report.sources):
+        console.print(f"[dim]  [{i}] {s.title} — {s.url}[/]")
+    for w in report.warnings:
+        console.print(f"[yellow]warning: {w}[/]")
 
 
 if __name__ == "__main__":

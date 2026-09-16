@@ -40,6 +40,7 @@ The app asks for keys the first time it needs them and saves them to `~/.hedge-f
 
 - A [Financial Datasets](https://financialdatasets.ai) API key, for prices, fundamentals, and earnings.
 - One LLM API key for the LLM-powered alpha models. Supported providers: Anthropic, OpenAI, DeepSeek, Google, xAI, Kimi.
+- Optionally, a [Tavily](https://tavily.com) API key (`TAVILY_API_KEY`) — only needed for `aihf research`, the web-search command below.
 
 Keys exported in your shell always win over the saved file.
 
@@ -68,6 +69,16 @@ aihf ~/.hedge-fund/mandates/example.yaml --tickers AAPL,MSFT --backtest
 ```
 
 A mandate is the desk — strategies, staff, risk, capital, cadence — and never names tickers; `--tickers` says what to point it at for this run.
+
+### Research one stock
+
+Diagnose a single ticker from live web search plus its point-in-time fundamentals. The report JSON prints to stdout; a summary with the cited sources goes to stderr:
+
+```bash
+aihf research AAPL
+```
+
+This is read-only and stands apart from the fund: it touches no mandate, trades nothing, and writes nothing to the ledger. It needs `TAVILY_API_KEY` in addition to your usual keys. Every catalyst and risk cites the sources it rests on, so you can check the claim against the page it came from.
 
 ## Development
 

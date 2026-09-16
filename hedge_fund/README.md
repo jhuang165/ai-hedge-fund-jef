@@ -41,6 +41,7 @@ poetry install                          # dependencies
 # .env needs (at repo root):
 #   FINANCIAL_DATASETS_API_KEY=...      # market/fundamentals data
 #   ANTHROPIC_API_KEY=...               # only for LLM agents (Buffett)
+#   TAVILY_API_KEY=...                  # only for `aihf research` (web search)
 
 # THE command. No arguments: launch the interactive app (a Textual TUI).
 # Build a fund — pick stocks, strategies, rebalance cadence — or backtest a
@@ -55,6 +56,11 @@ poetry run aihf ~/.hedge-fund/mandates/example.yaml --tickers AAPL,MSFT,NVDA
 # Backtest a mandate: the same run_cycle looped over history at the
 # mandate's rebalance cadence, full result JSON (every CycleRecord) on stdout.
 poetry run aihf ~/.hedge-fund/mandates/example.yaml --tickers AAPL,MSFT --backtest
+
+# Research one ticker: web search + point-in-time fundamentals → a cited
+# bullish/neutral/bearish diagnosis. Read-only — no mandate, no trades, no
+# ledger writes. Report JSON on stdout, summary + sources on stderr.
+poetry run aihf research AAPL
 
 # Tests
 poetry run pytest hedge_fund/
@@ -85,6 +91,7 @@ Data (point-in-time) → Alpha models → Portfolio → Risk → Execution → L
 | `event_study/` | Market-model abnormal returns (CARs) | ✅ |
 | `validation/` | Combinatorial purged CV (CPCV), backtest-overfitting prob (PBO) | ⬜ |
 | `tui/` | The interactive app (Textual): fund builder + live backtest board | ✅ |
+| `research/` | `SearchClient` protocol + Tavily client; `diagnose()` — read-only cited stock research, outside the fund pipeline | ✅ |
 
 ✅ built · ◐ partial · ⬜ planned
 
