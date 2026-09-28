@@ -1,0 +1,11 @@
+# Trend — systematic, cross-sectional momentum.
+# 12-1 price momentum, risk-adjusted: long the year's winners, short its
+# losers, dollar-neutral so the sleeve is a bet on dispersion, not the tape.
+name: trend
+display_name: Trend
+models:
+  - name: momentum
+blend:
+  method: conviction_weighted
+  gross_target: 1.0
+  market_neutral: true

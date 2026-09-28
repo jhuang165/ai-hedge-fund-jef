@@ -9,10 +9,18 @@ from hedge_fund.features.snapshot import InsufficientData, build_snapshot
 class MockDataClient:
     """Returns canned metrics; records what it was asked for."""
 
-    def __init__(self, metrics=None, facts=None):
+    def __init__(self, metrics=None, facts=None, close=None):
         self._metrics = metrics or []
         self._facts = facts
+        self._close = close
         self.metrics_calls = []
+
+    def get_prices(self, ticker, start_date, end_date, **kwargs):
+        from hedge_fund.data.models import Price
+        if self._close is None:
+            return []
+        return [Price(open=self._close, close=self._close, high=self._close,
+                      low=self._close, volume=1000, time=f"{end_date}T00:00:00Z")]
 
     def get_financial_metrics(self, ticker, end_date, period="ttm", limit=10):
         self.metrics_calls.append(
@@ -120,3 +128,52 @@ def test_render_contains_the_facts():
     assert "2025-01-15" not in text  # as_of must never leak into the prompt
     assert "2024-12-31" in text
     assert "publicly filed" in text
+
+
+# ---------------------------------------------------------------------------
+# Valuation at the current price
+# ---------------------------------------------------------------------------
+
+def _priced_history(n=8):
+    """Latest row struck at 100 (P/E 20 x EPS 5); older rows as filed."""
+    rows = _history(n)
+    rows[0] = _metric(rows[0].report_period, earnings_per_share=5.0,
+                      price_to_earnings_ratio=20.0, book_value_per_share=20.0,
+                      price_to_book_ratio=5.0, free_cash_flow_per_share=4.0,
+                      market_cap=1_000e6)
+    return rows
+
+
+def test_no_price_leaves_the_filed_valuation():
+    snap = build_snapshot("TEST", "2025-01-15", MockDataClient(_priced_history()))
+    assert snap.price is None
+    assert snap.market_cap_latest == 1_000e6
+    assert "Market cap (latest filed)" in snap.render()
+
+
+def test_price_restrikes_the_summary_valuation_only():
+    snap = build_snapshot("TEST", "2025-01-15", MockDataClient(_priced_history(), close=150.0))
+    assert snap.price == pytest.approx(150.0, rel=0.05)             # on a 10% rung near 150
+    assert snap.market_cap_latest == pytest.approx(1_000e6 * snap.price / 100, rel=1e-6)
+    assert snap.pe_at_price == pytest.approx(snap.price / 5.0)
+    assert snap.pb_at_price == pytest.approx(snap.price / 20.0)
+    assert snap.fcf_yield_at_price == pytest.approx(4.0 / snap.price)
+    # History rows stay as struck at filing — the row still says P/E 20.
+    assert snap.periods[0].price_to_earnings_ratio == 20.0
+    text = snap.render()
+    assert "Price: ~" in text and "Market cap at that price" in text
+    assert "as struck at each filing" in text
+
+
+def test_prices_on_the_same_rung_share_a_prompt_and_hash():
+    a = build_snapshot("TEST", "2025-01-15", MockDataClient(_priced_history(), close=150.0))
+    b = build_snapshot("TEST", "2025-01-22", MockDataClient(_priced_history(), close=153.0))
+    c = build_snapshot("TEST", "2025-01-29", MockDataClient(_priced_history(), close=175.0))
+    assert a.content_hash == b.content_hash and a.render() == b.render()
+    assert c.content_hash != a.content_hash
+
+
+def test_price_step_zero_uses_the_exact_close():
+    snap = build_snapshot("TEST", "2025-01-15", MockDataClient(_priced_history(), close=153.0),
+                          price_step=0.0)
+    assert snap.price == 153.0

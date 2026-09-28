@@ -43,9 +43,14 @@ class LLMAgent(AlphaModel):
         self,
         llm: LLMClient | None = None,
         cache: PromptCache | None = None,
+        price_step: float = 0.10,
     ) -> None:
+        # price_step: how coarsely the current price is snapped before it
+        # enters the prompt. 10% rungs mean a persona re-reasons when the
+        # valuation has moved a tenth, not on every tick.
         self._llm = llm if llm is not None else make_llm()
         self._cache = cache if cache is not None else PromptCache()
+        self._price_step = price_step
 
     # ------------------------------------------------------------------
     # AlphaModel interface
@@ -109,7 +114,7 @@ class LLMAgent(AlphaModel):
         (macro, news); when a second snapshot TYPE exists, extract the
         implicit interface (ticker/as_of/content_hash/render) into a
         Protocol — not before."""
-        return build_snapshot(ticker, date, data_client)
+        return build_snapshot(ticker, date, data_client, price_step=self._price_step)
 
     def build_user_prompt(self, snapshot: FundamentalsSnapshot) -> str:
         """Default user prompt: the rendered snapshot. Override to enrich."""

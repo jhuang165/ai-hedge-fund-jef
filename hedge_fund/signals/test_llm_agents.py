@@ -46,6 +46,9 @@ class MockDataClient:
     def get_company_facts(self, ticker):
         return None
 
+    def get_prices(self, ticker, start_date, end_date, **kwargs):
+        return []
+
 
 def _history(n=8):
     quarters = ["2024-12-31", "2024-09-30", "2024-06-30", "2024-03-31",

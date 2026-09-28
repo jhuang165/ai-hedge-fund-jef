@@ -62,6 +62,18 @@ class QuantModel(AlphaModel):
     # Shared helpers
     # ------------------------------------------------------------------
 
+    def _abstain(self, ticker: str, date: str, reason: str) -> Signal:
+        """No opinion (excluded from blending) — the model could not form a
+        view, e.g. not enough history. Distinct from a real neutral 0.0."""
+        return Signal(
+            model_name=self.name,
+            ticker=ticker,
+            date=date,
+            value=0.0,
+            reasoning=f"abstained: {reason}",
+            metadata={"abstained": True, "abstain_reason": reason},
+        )
+
     @staticmethod
     def _safe_float(value, default: float = 0.0) -> float:
         """Convert to float, returning *default* for NaN / None / errors."""

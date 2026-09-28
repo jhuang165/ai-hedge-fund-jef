@@ -23,9 +23,10 @@ A fund runs two kinds of pods, like a real shop. **Discretionary** strategies
 are staffed by **agents** — LLM investor personas (Warren Buffett, Charlie
 Munger, Benjamin Graham, Peter Lynch, Stanley Druckenmiller) whose judgment
 is the edge; blend them long-biased or market-neutral. **Systematic**
-strategies are powered by quant models (post-earnings drift) — the model *is*
-the strategy, no persona attached. Both kinds implement one interface and
-plug into the same engine unchanged.
+strategies are powered by quant models (post-earnings drift, 12-1 momentum,
+short-term reversal, insider flow, quality-value) — the model *is* the
+strategy, no persona attached. Both kinds implement one interface and plug
+into the same engine unchanged.
 
 Run a fund two ways: **one cycle** (today's data → today's target book) or a
 **backtest** — the same cycle looped over history at the mandate's rebalance
@@ -57,10 +58,27 @@ poetry run aihf ~/.hedge-fund/mandates/example.yaml --tickers AAPL,MSFT,NVDA
 # mandate's rebalance cadence, full result JSON (every CycleRecord) on stdout.
 poetry run aihf ~/.hedge-fund/mandates/example.yaml --tickers AAPL,MSFT --backtest
 
-# Research one ticker: web search + point-in-time fundamentals → a cited
-# bullish/neutral/bearish diagnosis. Read-only — no mandate, no trades, no
-# ledger writes. Report JSON on stdout, summary + sources on stderr.
+# Backtest over a dated universe (point-in-time membership) instead of a
+# hand-picked list, which the result otherwise flags as survivorship-biased.
+poetry run aihf ~/.hedge-fund/mandates/example.yaml --universe ~/.hedge-fund/universes/example.yaml --backtest
+
+# The web app: research desk + fund runner in a browser, same engine.
+poetry run aihf web
+
+# Research: web search + point-in-time fundamentals + price action + every
+# quant model's reading → a cited bullish/neutral/bearish diagnosis with an
+# action. Bare ticker: buy/watch/avoid. With a position (SHARES@COST):
+# add/hold/trim/exit. Several names come back ranked. Read-only — no
+# mandate, no trades, no ledger writes. JSON on stdout, summary on stderr.
 poetry run aihf research AAPL
+poetry run aihf research AAPL:100@150.25 MSFT --portfolio holdings.yaml
+
+# Grade every saved research call against what the market did next.
+poetry run aihf scorecard --horizon 90
+
+# Stress a backtest: hold-out split, and a sweep over any mandate field.
+poetry run aihf validate ~/.hedge-fund/mandates/example.yaml --tickers AAPL,MSFT --split 2025-01-01
+poetry run aihf validate ~/.hedge-fund/mandates/example.yaml --tickers AAPL,MSFT --sweep execution.slippage_bps=0,5,20
 
 # Tests
 poetry run pytest hedge_fund/
@@ -78,20 +96,21 @@ Data (point-in-time) → Alpha models → Portfolio → Risk → Execution → L
 | Module | What | Status |
 |--------|------|--------|
 | `data/` | `DataClient` protocol, Financial Datasets client, disk cache | ✅ |
-| `signals/` | `AlphaModel` interface, PEAD, `LLMAgent` + 5 investor personas | ✅ |
+| `signals/` | `AlphaModel` interface; quant models (PEAD, momentum, mean-reversion, insider-flow, quality-value); `LLMAgent` + 5 investor personas | ✅ |
 | `llm/` | LLM provider protocol, Anthropic client, prompt cache | ✅ |
-| `features/` | Point-in-time fundamentals snapshot (more features planned) | ◐ |
-| `fund/` | `FundSpec`/`StrategySpec` — mandates as YAML data — and the `Fund` object | ✅ |
-| `strategies/` | Strategy library (fundamental-ls, deep-value, inflections, earnings-drift) — add yours as a YAML | ✅ |
-| `portfolio/` | View blending → target weights (conviction-weighted, optional market-neutral) | ✅ |
-| `risk/` | Hard limits — per-position and gross-exposure clamps | ✅ |
-| `brokers/` | `Broker` protocol + `SimBroker` (paper/live brokers planned) | ◐ |
-| `pipeline/` | `run_cycle` — one code path for backtest/paper/live; `CycleRecord` | ✅ |
-| `backtesting/` | `backtest_fund` — the whole fund over history on `run_cycle` — plus the per-model engine | ✅ |
+| `features/` | Point-in-time snapshots: fundamentals (`snapshot.py`, valuation re-struck at the current price) and price action (`technicals.py`); `valuation.py` reprices filed multiples and derives the trailing dividend | ✅ |
+| `fund/` | `FundSpec`/`StrategySpec` — mandates as YAML data (strategies, risk, execution policy) — the `Fund` object, and `DatedUniverse` for point-in-time membership | ✅ |
+| `strategies/` | Strategy library (fundamental-ls, deep-value, inflections, earnings-drift, trend, insider-flow, quality-value, multifactor) — add yours as a YAML | ✅ |
+| `portfolio/` | View blending → target weights (conviction-weighted, risk-scaled by realized vol, optional market-neutral) | ✅ |
+| `risk/` | Hard limits — per-position, net-exposure and gross-exposure clamps; drawdown kill-switch | ✅ |
+| `brokers/` | `Broker` protocol + `SimBroker` with a commission + slippage cost model (paper/live brokers planned) | ◐ |
+| `pipeline/` | `run_cycle` — one code path for backtest/paper/live; dividend accrual on the book; delta orders under a no-trade band; `CycleRecord` | ✅ |
+| `backtesting/` | `backtest_fund` — the whole fund over history on `run_cycle`, with per-strategy attribution (paper sleeve NAVs + residual) — plus the per-model engine | ✅ |
 | `event_study/` | Market-model abnormal returns (CARs) | ✅ |
-| `validation/` | Combinatorial purged CV (CPCV), backtest-overfitting prob (PBO) | ⬜ |
+| `validation/` | Hold-out split and parameter sweep (`aihf validate`); CPCV and PBO planned | ◐ |
 | `tui/` | The interactive app (Textual): fund builder + live backtest board | ✅ |
-| `research/` | `SearchClient` protocol + Tavily client; `diagnose()` — read-only cited stock research, outside the fund pipeline | ✅ |
+| `web/` | `aihf web` — FastAPI + one static page: research desk, fund runner (cycle/backtest with live curve), mandate builder, saved reports, key settings | ✅ |
+| `research/` | `SearchClient` protocol + Tavily client; `diagnose()` — read-only cited research with a desk readout of every quant model and position-aware actions, outside the fund pipeline; every report saved, and `grade()` scores them against forward returns (`aihf scorecard`) | ✅ |
 
 ✅ built · ◐ partial · ⬜ planned
 
@@ -119,7 +138,9 @@ Two high-leverage contributions:
 
 - **A new agent or quant model** (code): read `signals/base.py` for the
   `AlphaModel` interface, use `signals/buffett.py` (an agent is just a system
-  prompt) or `signals/pead.py` (quant) as a template, register it, add a test.
+  prompt) or `signals/momentum.py` (quant, over the price snapshot) as a
+  template, register it, add a test. A registered quant model is
+  automatically read out in `aihf research`.
 - **A new strategy** (no code): drop a YAML in `strategies/` bundling existing
   models with a blend policy — the fund builder picks it up automatically.
 

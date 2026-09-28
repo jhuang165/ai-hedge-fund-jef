@@ -35,8 +35,8 @@ it in backtest, paper, or live mode (see [VISION.md](./VISION.md)).
 | Fund object — persistent mandate, staff, capital, books | 🚧 (mandates, staffing, and per-run receipts ship; tickers are a run-time input, not part of the mandate; the carried book is next) |
 | Persistent ledger — positions, every decision + thesis, orders, fills, NAV history | 🚧 (write half ships: every run and backtest saves a full `CycleRecord` receipt, and the TUI shows the history; read half next: seed the broker from the newest receipt so NAV moves between runs) |
 | LLM provider layer — one client factory (`make_llm`) routed by the model registry: Anthropic · OpenAI · DeepSeek · Google · xAI · Kimi | ✅ (Ollama next — the free local path, and the last blocker v1 holds over v2) |
-| Point-in-time data correctness — as-of / filing-date queries, no lookahead | 🚧 |
-| Validation gate — CPCV, probability of backtest overfitting (PBO) | ⬜ |
+| Point-in-time data correctness — as-of / filing-date queries, no lookahead | 🚧 (filing-date queries and dated universes ship; filed multiples are re-struck at the as-of price; dividends accrue from the filed payout since the price feed is unadjusted; a hand-picked universe is flagged as survivorship-biased on every backtest; delisting handling is next) |
+| Validation gate — CPCV, probability of backtest overfitting (PBO) | 🚧 (`aihf validate` ships a hold-out split and a parameter sweep over any mandate field; CPCV and PBO next) |
 
 ## Analysts (alpha models) — the main contribution surface
 
@@ -48,10 +48,11 @@ the engine. Two flavors:
 | Model | Status |
 |-------|--------|
 | Post-Earnings Announcement Drift (PEAD) | ✅ |
+| Momentum (12-1, risk-adjusted) | ✅ |
+| Mean reversion (short-term reversal, z-scored + RSI) | ✅ |
+| Value / quality factors (own-history value percentiles + quality levels) | ✅ |
+| Insider flow (Form 4 net purchase ratio) | ✅ |
 | Market-regime detection (HMM / regime-switching) | ⬜ |
-| Momentum | ⬜ |
-| Mean reversion | ⬜ |
-| Value / quality factors | ⬜ |
 | Statistical arbitrage | ⬜ |
 | *Your model here* | ⬜ |
 
@@ -71,10 +72,10 @@ can be backtested and combined — is a great first contribution:
 
 | Item | Status |
 |------|--------|
-| Strategy — bundle models + a blend policy + capital slice (a "pod") | ✅ (`StrategySpec` + library: fundamental-ls, deep-value, inflections, earnings-drift) |
-| Portfolio construction — blend model views → target weights | ✅ (conviction-weighted; optional market-neutral sleeves) |
+| Strategy — bundle models + a blend policy + capital slice (a "pod") | ✅ (`StrategySpec` + library: fundamental-ls, deep-value, inflections, earnings-drift, trend, insider-flow, quality-value, multifactor) |
+| Portfolio construction — blend model views → target weights | ✅ (conviction-weighted, risk-scaled by each name's realized vol; optional market-neutral sleeves) |
 | Multi-strategy fund — many pods running at once, netted into one book | ✅ (`run_cycle` nets every sleeve into one target book, then master risk clamps it) |
-| Allocator (CIO) — pluggable capital allocation across strategies | 🚧 (static slices ship; the pluggable interface is next) |
+| Allocator (CIO) — pluggable capital allocation across strategies | 🚧 (static slices ship, and every backtest now attributes the return to each strategy's paper sleeve — the track record an allocator reads; the pluggable interface is next) |
 | ↳ Static (human-set dial) | ✅ (capital slices in the mandate) |
 | ↳ Risk-parity / inverse-vol | ⬜ |
 | ↳ Dynamic — feed winners, cut drawdowns (Millennium-style) | ⬜ |
@@ -84,9 +85,9 @@ can be backtested and combined — is a great first contribution:
 
 | Item | Status |
 |------|--------|
-| Risk model — hard caps (pod-level budgets + fund-level limits) | 🚧 (fund-level position + gross caps ship; pod budgets with pods) |
+| Risk model — hard caps (pod-level budgets + fund-level limits) | 🚧 (fund-level position, net and gross caps plus a drawdown kill-switch ship; pod budgets with pods) |
 | Broker protocol — pluggable, mirrors the `DataClient` pattern | ✅ |
-| ↳ Simulated broker (backtest) | ✅ |
+| ↳ Simulated broker (backtest) | ✅ (commission + slippage cost model from the mandate's `execution` block; orders pass a no-trade band first) |
 | ↳ Paper broker | ⬜ |
 | ↳ Live broker (Interactive Brokers / Alpaca) — opt-in plugin, off by default | ⬜ |
 
@@ -108,7 +109,7 @@ Thin clients over the engine — pick the surface, the core stays the same.
 |------|--------|
 | TUI — the main interface (Textual): build a fund, run it as of today, backtest it, browse every signal's thesis, fund history + delete, model picker, in-app API-key setup | 🚧 (ships and is the default `python -m v2.run`; streaming reasoning + watch mode remain) |
 | CLI — thin machine client over the engine: `python -m v2.run mandate.yaml --tickers … [--backtest]`, JSON on stdout | ✅ |
-| Web dashboard — replayable, time-scrubbable reasoning ledger | 🚧 (frontend scaffold exists; still runs on the v1 engine) |
+| Web dashboard — replayable, time-scrubbable reasoning ledger | 🚧 (`aihf web` ships on the v2 engine: research desk with ranked, position-aware reports; fund runner with live backtest curve and per-cycle theses; mandate builder; saved reports. Time-scrubbing the ledger waits on the carried book) |
 | Conversational control plane — operate the fund in natural language | ⬜ |
 
 ## Data
@@ -116,7 +117,7 @@ Thin clients over the engine — pick the surface, the core stays the same.
 | Item | Status |
 |------|--------|
 | Data layer — pluggable `DataClient` protocol + provider client | ✅ |
-| Alternative data connectors — satellite imagery, web & social-media search, app-download trends, shipping data, etc. | 🚧 (web search ships via `aihf research`: a `SearchClient` protocol + Tavily client behind a read-only, cited stock diagnosis; feeding search into an alpha model is next) |
+| Alternative data connectors — satellite imagery, web & social-media search, app-download trends, shipping data, etc. | 🚧 (web search ships via `aihf research`: a `SearchClient` protocol + Tavily client behind a read-only, cited diagnosis that also reads out every quant model and judges a declared position; insider filings feed the insider-flow model; every research call is saved and `aihf scorecard` grades it against forward excess return — hit rate, bull/bear spread, rank IC; feeding search into an alpha model is next) |
 
 ## Contributing
 

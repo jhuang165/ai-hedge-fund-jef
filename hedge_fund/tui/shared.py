@@ -41,6 +41,10 @@ DISPLAY_NAMES = {
     "lynch": "Peter Lynch",
     "druckenmiller": "Stanley Druckenmiller",
     "pead": "post-earnings drift",
+    "momentum": "12-1 momentum",
+    "mean-reversion": "short-term reversal",
+    "insider-flow": "insider flow",
+    "quality-value": "quality-value",
 }
 
 _SHORT_NAMES = {
@@ -50,6 +54,10 @@ _SHORT_NAMES = {
     "lynch": "Lynch",
     "druckenmiller": "Druckenmiller",
     "pead": "PEAD",
+    "momentum": "Momentum",
+    "mean-reversion": "Reversal",
+    "insider-flow": "Insiders",
+    "quality-value": "Q-Value",
 }
 
 # The LLM the investor agents reason with. Picked once, upfront; make_llm()

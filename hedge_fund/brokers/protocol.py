@@ -32,3 +32,10 @@ class Broker(Protocol):
     def cash(self) -> float: ...
 
     def place_order(self, order: Order) -> Fill: ...
+
+    def credit(self, amount: float, memo: str) -> None:
+        """Book a cash event that is not a trade — a dividend accrued by
+        the pipeline, negative for a dividend owed on a short. A simulated
+        broker moves its cash; a real broker, whose cash moves when the
+        real dividend lands, may record the memo and do nothing."""
+        ...

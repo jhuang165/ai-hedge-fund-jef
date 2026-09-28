@@ -6,10 +6,13 @@ import pytest
 
 from hedge_fund.data.client import FDClientError
 from hedge_fund.data.models import FinancialMetrics
+from hedge_fund.features.technicals import YEAR
+from hedge_fund.features.test_technicals import bars, linear
 from hedge_fund.llm import PromptCache
 from hedge_fund.llm.client import LLMParseError
+from hedge_fund.models import Signal
 from hedge_fund.research.diagnose import DEFAULT_QUERIES, diagnose
-from hedge_fund.research.models import ResearchReport
+from hedge_fund.research.models import Position, ResearchReport
 from hedge_fund.research.search import SearchClientError, SearchResult
 
 # ---------------------------------------------------------------------------
@@ -34,9 +37,12 @@ class FakeLLM:
 
 
 class MockDataClient:
-    def __init__(self, metrics=None, error=None):
+    """Fundamentals, a year of rising bars, no insider trades, no earnings."""
+
+    def __init__(self, metrics=None, error=None, prices=None):
         self._metrics = metrics or []
         self._error = error
+        self._prices = bars(linear(YEAR + 40), end="2025-01-15") if prices is None else prices
 
     def get_financial_metrics(self, ticker, end_date, period="ttm", limit=10):
         if self._error is not None:
@@ -45,6 +51,34 @@ class MockDataClient:
 
     def get_company_facts(self, ticker):
         return None
+
+    def get_prices(self, ticker, start_date, end_date, **kw):
+        return [p for p in self._prices if start_date <= p.time[:10] <= end_date]
+
+    def get_insider_trades(self, ticker, end_date, start_date=None, limit=1000):
+        return []
+
+    def get_earnings_history(self, ticker, limit=12):
+        return []
+
+
+class FakeModel:
+    """A stand-in quant model with a fixed view."""
+
+    def __init__(self, name="fake", value=0.5, abstain=False):
+        self._name, self._value, self._abstain = name, value, abstain
+        self.calls = []
+
+    @property
+    def name(self):
+        return self._name
+
+    def predict(self, ticker, date, data_client):
+        self.calls.append((ticker, date))
+        meta = {"abstained": True, "abstain_reason": "no data"} if self._abstain else {}
+        return Signal(model_name=self._name, ticker=ticker, date=date,
+                      value=0.0 if self._abstain else self._value,
+                      reasoning="fixed view", metadata=meta)
 
 
 class FakeSearchClient:
@@ -84,11 +118,19 @@ def _queries(ticker):
     return [q.format(ticker=ticker) for q in DEFAULT_QUERIES]
 
 
-BULLISH = json.dumps({
-    "signal": "bullish", "confidence": 80, "thesis": "Strong quarter.\nMore detail.",
-    "catalysts": [{"text": "beat estimates", "source_indices": [0]}],
-    "risks": [],
-})
+def _response(**overrides):
+    data = {
+        "signal": "bullish", "confidence": 80, "action": "buy",
+        "action_rationale": "cheap and improving",
+        "thesis": "Strong quarter.\nMore detail.",
+        "catalysts": [{"text": "beat estimates", "source_indices": [0]}],
+        "risks": [],
+    }
+    data.update(overrides)
+    return json.dumps(data)
+
+
+BULLISH = _response()
 
 
 def _search_client_all_queries(ticker):
@@ -118,9 +160,15 @@ def test_happy_path_builds_report(tmp_path):
     assert report.signal == "bullish"
     assert report.confidence == 80
     assert report.catalysts[0].source_indices == [0]
+    assert report.action == "buy"
+    assert report.action_rationale == "cheap and improving"
     assert report.snapshot_hash is not None
+    assert report.technicals is not None
+    assert report.position is None
     assert len(report.queries) == len(DEFAULT_QUERIES)
     assert report.warnings == []
+    # Every registered quant model was consulted.
+    assert {s.model_name for s in report.desk} >= {"momentum", "mean-reversion", "insider-flow", "quality-value", "pead"}
 
 
 def test_source_dedupe_by_url(tmp_path):
@@ -196,19 +244,104 @@ def test_malformed_json_raises_and_persists_audit_record(tmp_path):
 
 
 def test_invalid_signal_raises(tmp_path):
-    bad = json.dumps({"signal": "very bullish", "confidence": 80, "thesis": "x",
-                       "catalysts": [], "risks": []})
     with pytest.raises(ValueError):
-        _diagnose(tmp_path, FakeLLM(bad))
+        _diagnose(tmp_path, FakeLLM(_response(signal="very bullish")))
 
 
 def test_out_of_range_source_index_raises(tmp_path):
-    bad = json.dumps({
-        "signal": "bullish", "confidence": 80, "thesis": "x",
-        "catalysts": [{"text": "c", "source_indices": [99]}], "risks": [],
-    })
+    bad = _response(catalysts=[{"text": "c", "source_indices": [99]}])
     with pytest.raises(ValueError):
         _diagnose(tmp_path, FakeLLM(bad))
+
+
+# ---------------------------------------------------------------------------
+# Actions and positions
+# ---------------------------------------------------------------------------
+
+def test_held_action_on_a_not_held_name_is_rejected(tmp_path):
+    with pytest.raises(ValueError, match="not-held"):
+        _diagnose(tmp_path, FakeLLM(_response(action="trim")))
+
+
+def test_flat_action_on_a_held_name_is_rejected(tmp_path):
+    position = Position(ticker="TEST", shares=100, cost_basis=90.0)
+    with pytest.raises(ValueError, match="held"):
+        _diagnose(tmp_path, FakeLLM(_response(action="buy")), position=position)
+
+
+def test_missing_action_is_rejected(tmp_path):
+    raw = json.loads(_response())
+    del raw["action"]
+    with pytest.raises(ValueError, match="invalid action"):
+        _diagnose(tmp_path, FakeLLM(json.dumps(raw)))
+
+
+def test_position_is_marked_and_prompted(tmp_path):
+    llm = FakeLLM(_response(action="hold"))
+    position = Position(ticker="TEST", shares=100, cost_basis=90.0)
+    data = MockDataClient(metrics=_history())
+
+    report = _diagnose(tmp_path, llm, data=data, position=position)
+
+    assert report.action == "hold"
+    assert report.position is not None
+    assert report.position.side == "long"
+    assert report.position.last_close == report.technicals.last_close
+    assert report.position.unrealized_pnl_pct == pytest.approx(
+        (report.technicals.last_close - 90.0) / 90.0)
+    # The prompt tells the model what is held and which actions apply.
+    record = json.loads(next((tmp_path / "llm").glob("*.json")).read_text())
+    assert "long 100 shares" in record["user"]
+    assert "add, hold, trim, exit" in record["user"]
+
+
+def test_short_position_pnl_is_signed_by_side(tmp_path):
+    position = Position(ticker="TEST", shares=-50, cost_basis=200.0)
+    report = _diagnose(tmp_path, FakeLLM(_response(action="exit")), position=position)
+    close = report.technicals.last_close
+    assert report.position.side == "short"
+    assert report.position.market_value == pytest.approx(-50 * close)
+    assert report.position.unrealized_pnl == pytest.approx(-50 * (close - 200.0))
+
+
+def test_position_without_price_history_is_unmarked(tmp_path):
+    position = Position(ticker="TEST", shares=10, cost_basis=5.0)
+    data = MockDataClient(metrics=_history(), prices=[])
+    report = _diagnose(tmp_path, FakeLLM(_response(action="hold")), data=data, position=position)
+    assert report.technicals is None
+    assert report.position.last_close is None
+    assert report.position.unrealized_pnl_pct is None
+    assert any("price history unavailable" in w for w in report.warnings)
+
+
+# ---------------------------------------------------------------------------
+# Desk readout
+# ---------------------------------------------------------------------------
+
+def test_desk_readout_goes_into_the_prompt(tmp_path):
+    bull = FakeModel("bull", 0.7)
+    silent = FakeModel("silent", abstain=True)
+    report = _diagnose(tmp_path, FakeLLM(BULLISH), desk=[bull, silent])
+
+    assert [s.model_name for s in report.desk] == ["bull", "silent"]
+    assert bull.calls == [("TEST", "2025-01-15")]
+    record = json.loads(next((tmp_path / "llm").glob("*.json")).read_text())
+    assert "bull: +0.70 — fixed view" in record["user"]
+    assert "silent: abstained — no data" in record["user"]
+    assert "Price action for TEST" in record["user"]
+    assert len(record["desk"]) == 2
+
+
+def test_empty_desk_is_allowed(tmp_path):
+    report = _diagnose(tmp_path, FakeLLM(BULLISH), desk=[])
+    assert report.desk == []
+
+
+def test_reports_rank_by_signed_confidence(tmp_path):
+    bull = _diagnose(tmp_path, FakeLLM(_response(signal="bullish", confidence=60)))
+    bear = _diagnose(tmp_path, FakeLLM(_response(signal="bearish", confidence=90, action="avoid")))
+    flat = _diagnose(tmp_path, FakeLLM(_response(signal="neutral", confidence=90, action="watch")))
+    assert sorted([bull, bear, flat], key=lambda r: r.score, reverse=True) == [bull, flat, bear]
 
 
 # ---------------------------------------------------------------------------

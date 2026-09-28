@@ -22,19 +22,23 @@ backtest_fund runs the whole shop).
 from __future__ import annotations
 
 from datetime import date as _date
-from typing import Callable
+from typing import Callable, Literal
 
-import numpy as np
 from pydantic import BaseModel
 
+from hedge_fund.backtesting.attribution import Attribution, attribute_strategies
+from hedge_fund.backtesting.metrics import (
+    annualized_return,
+    max_drawdown,
+    period_returns,
+    sharpe_ratio,
+)
 from hedge_fund.brokers.sim import SimBroker
 from hedge_fund.data.protocol import DataClient
 from hedge_fund.fund.spec import Fund, normalize_universe
+from hedge_fund.fund.universe import DatedUniverse, Universe, survivorship_warning
 from hedge_fund.pipeline.models import CycleRecord
 from hedge_fund.pipeline.run_cycle import run_cycle
-
-_PERIODS_PER_YEAR = {"daily": 252, "weekly": 52, "monthly": 12}
-
 
 class FundBacktestMetrics(BaseModel):
     """The numbers that say whether the fund worked, and against what."""
@@ -47,6 +51,10 @@ class FundBacktestMetrics(BaseModel):
     excess_return_pct: float          # fund total minus benchmark total
     n_cycles: int
     n_orders: int
+    total_costs: float                # commission + slippage over the run, in dollars
+    costs_pct: float                  # total_costs / starting capital — the friction drag
+    total_dividends: float = 0.0      # dividend cash accrued on the book over the run
+    kill_switch_date: str | None = None  # first cycle the drawdown kill-switch flattened the book
 
 
 class FundBacktestResult(BaseModel):
@@ -59,12 +67,15 @@ class FundBacktestResult(BaseModel):
     end: str                          # last grid date actually traded
     rebalance: str
     benchmark: str
-    universe: list[str]               # the tickers this backtest was run over
+    universe: list[str]               # every ticker this backtest traded (union, for a dated universe)
+    universe_kind: Literal["static", "dated"]
+    warnings: list[str]               # what the reader must know before trusting the curve
     capital: float
     dates: list[str]
     nav: list[float]                  # NAV after each cycle, one per date
     benchmark_nav: list[float]        # benchmark scaled to the same capital
     metrics: FundBacktestMetrics
+    attribution: Attribution          # each strategy's paper sleeve, and the residual
     records: list[CycleRecord]
 
 
@@ -73,7 +84,7 @@ def backtest_fund(
     start: str,
     end: str,
     data_client: DataClient,
-    universe: list[str],
+    universe: Universe,
     *,
     on_cycle: Callable[[int, int, CycleRecord], None] | None = None,
 ) -> FundBacktestResult:
@@ -85,11 +96,28 @@ def backtest_fund(
     The universe is the study's input, not the mandate's: the same fund can
     be backtested over different names.
 
+    A plain list is traded on every date and the result carries the
+    survivorship warning. A DatedUniverse is asked for its members as of
+    each grid date, so names join and leave the book as they did in
+    history.
+
+    The fund's high-water mark is tracked here and handed to each cycle, so
+    the mandate's drawdown kill-switch can fire; the first date it did is
+    on the metrics.
+
     Fail loud: no benchmark bars in the window raises — a backtest with no
     trading grid is an infrastructure problem, not an empty result.
     """
     spec = fund.spec
-    universe = normalize_universe(universe)
+    if isinstance(universe, DatedUniverse):
+        kind: Literal["static", "dated"] = "dated"
+        members = universe.as_of
+        traded = universe.tickers
+    else:
+        kind = "static"
+        static = normalize_universe(universe)
+        members = lambda _date: static  # noqa: E731
+        traded = static
     bars = data_client.get_prices(spec.benchmark, start, end)
     closes = {b.time[:10]: b.close for b in bars if start <= b.time[:10] <= end}
     if not closes:
@@ -99,18 +127,34 @@ def backtest_fund(
         )
     grid = rebalance_grid(sorted(closes), spec.rebalance)
 
-    broker = SimBroker(cash=spec.capital)
+    broker = SimBroker(
+        cash=spec.capital,
+        commission_bps=spec.execution.commission_bps,
+        slippage_bps=spec.execution.slippage_bps,
+    )
     records: list[CycleRecord] = []
     nav: list[float] = []
     benchmark_nav: list[float] = []
     base_close = closes[grid[0]]
+    peak = spec.capital
+    prev: str | None = None
     for i, as_of in enumerate(grid):
-        record = run_cycle(fund, as_of, broker, data_client, universe)
+        record = run_cycle(fund, as_of, broker, data_client, members(as_of),
+                           peak_nav=peak, prev_as_of=prev)
         records.append(record)
         nav.append(record.nav)
-        benchmark_nav.append(spec.capital * closes[as_of] / base_close)
+        peak = max(peak, record.nav)
+        prev = as_of
+        # Price return, plus the mandate's assumed yield accrued continuously.
+        years = (_date.fromisoformat(as_of) - _date.fromisoformat(grid[0])).days / 365
+        income = (1 + spec.dividends.benchmark_yield) ** years
+        benchmark_nav.append(spec.capital * closes[as_of] / base_close * income)
         if on_cycle is not None:
             on_cycle(i, len(grid), record)
+
+    warnings = []
+    if (w := survivorship_warning(universe, grid[0])) is not None:
+        warnings.append(w)
 
     return FundBacktestResult(
         fund=spec.name,
@@ -118,13 +162,16 @@ def backtest_fund(
         end=grid[-1],
         rebalance=spec.rebalance,
         benchmark=spec.benchmark,
-        universe=universe,
+        universe=traded,
+        universe_kind=kind,
+        warnings=warnings,
         capital=spec.capital,
         dates=grid,
         nav=nav,
         benchmark_nav=benchmark_nav,
         metrics=_metrics(spec.capital, grid, nav, benchmark_nav,
                          spec.rebalance, records),
+        attribution=attribute_strategies(records, spec.capital, spec.rebalance),
         records=records,
     )
 
@@ -165,32 +212,16 @@ def _metrics(
     records: list[CycleRecord],
 ) -> FundBacktestMetrics:
     total = nav[-1] / capital - 1
-
-    calendar_days = (_date.fromisoformat(grid[-1]) - _date.fromisoformat(grid[0])).days
-    years = max(calendar_days / 365.25, 0.01)
-    annualized = (1 + total) ** (1 / years) - 1
+    annualized = annualized_return(total, grid[0], grid[-1])
 
     # Per-period returns over the curve including the starting capital, so
     # the first tick's move counts too.
-    curve = np.array([capital] + nav)
-    returns = curve[1:] / curve[:-1] - 1
-    if len(returns) > 1 and float(returns.std(ddof=1)) > 0:
-        sharpe = float(returns.mean() / returns.std(ddof=1)) * np.sqrt(
-            _PERIODS_PER_YEAR[cadence]
-        )
-    else:
-        sharpe = 0.0
-
-    peak = curve[0]
-    max_dd = 0.0
-    for value in curve:
-        if value > peak:
-            peak = value
-        drawdown = (peak - value) / peak
-        if drawdown > max_dd:
-            max_dd = drawdown
+    curve = [capital] + nav
+    sharpe = sharpe_ratio(period_returns(curve), cadence)
+    max_dd = max_drawdown(curve)
 
     benchmark_return = benchmark_nav[-1] / capital - 1
+    total_costs = sum(r.costs for r in records)
 
     return FundBacktestMetrics(
         total_return_pct=round(total, 6),
@@ -201,4 +232,12 @@ def _metrics(
         excess_return_pct=round(total - benchmark_return, 6),
         n_cycles=len(nav),
         n_orders=sum(len(r.orders) for r in records),
+        total_costs=round(total_costs, 2),
+        costs_pct=round(total_costs / capital, 6),
+        total_dividends=round(sum(sum(r.dividends.values()) for r in records), 2),
+        kill_switch_date=next(
+            (r.as_of for r in records
+             if any(c.limit == "max_drawdown_pct" for c in r.clamps)),
+            None,
+        ),
     )

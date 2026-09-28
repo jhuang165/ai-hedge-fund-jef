@@ -31,6 +31,7 @@ from typing import Any, Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from hedge_fund.fund.universe import normalize_tickers
 from hedge_fund.risk.limits import RiskLimits
 from hedge_fund.signals import ALPHA_MODEL_REGISTRY
 from hedge_fund.signals.base import AlphaModel
@@ -62,6 +63,68 @@ class BlendPolicy(BaseModel):
         description="demean convictions cross-sectionally before scaling: long "
         "the best-liked names relative to the rest, short the least-liked — a "
         "dollar-neutral sleeve",
+    )
+    vol_scaled: bool = Field(
+        default=True,
+        description="divide each conviction by the name's realized vol before "
+        "sizing, so equal views get equal risk rather than equal dollars; a "
+        "name with no price history is sized as a typical-vol name",
+    )
+
+
+class ExecutionPolicy(BaseModel):
+    """How the fund trades: what it refuses to churn, and what trading costs.
+
+    The band is the fund's own rule and applies in every mode. The cost
+    fields are the backtest's assumptions — what SimBroker charges — since a
+    real broker reports its own fills. Both live in the mandate because a
+    backtest's Sharpe is only as honest as the friction it was charged.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    min_trade_pct: float = Field(
+        default=0.005, ge=0,
+        description="skip a rebalance whose notional is below this fraction "
+        "of equity; exits always trade in full. 0 disables the band",
+    )
+    commission_bps: float = Field(
+        default=0.0, ge=0,
+        description="broker fee per side, in basis points of traded notional",
+    )
+    slippage_bps: float = Field(
+        default=5.0, ge=0,
+        description="fill moves this many basis points against the fund from "
+        "the decision close — the gap between the print you saw and the one "
+        "you get",
+    )
+
+
+class DividendPolicy(BaseModel):
+    """How the fund accounts for dividends.
+
+    The price feed is unadjusted and carries no dividend events, so a
+    backtest that ignores them under-counts every payer and flatters
+    every non-payer. The fund side is accrued from filed facts: each
+    cycle, every held name earns (or, short, owes) its trailing dividend
+    per share — payout ratio x EPS from the latest filing public on that
+    date — pro-rated by the days since the last cycle. Smooth accrual in
+    place of lumpy ex-dates; the same money over a quarter.
+
+    The benchmark is an ETF and files nothing, so its yield is a stated
+    assumption. 0 leaves the benchmark curve price-only.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    accrue: bool = Field(
+        default=True,
+        description="accrue trailing dividends on held names between cycles",
+    )
+    benchmark_yield: float = Field(
+        default=0.0, ge=0,
+        description="annual dividend yield assumed for the benchmark curve "
+        "(SPY has run about 1.3%); 0 = price-only benchmark",
     )
 
 
@@ -111,6 +174,14 @@ class FundSpec(BaseModel):
     name: str
     strategies: list[StrategySpec] = Field(min_length=1)
     risk: RiskLimits
+    execution: ExecutionPolicy = Field(
+        default_factory=ExecutionPolicy,
+        description="no-trade band and the cost model the backtest charges",
+    )
+    dividends: DividendPolicy = Field(
+        default_factory=DividendPolicy,
+        description="dividend accrual on the book, and the benchmark's assumed yield",
+    )
     capital: float = Field(default=100_000.0, gt=0)
     rebalance: Literal["daily", "weekly", "monthly"] = Field(
         default="weekly",
@@ -147,14 +218,7 @@ def normalize_universe(tickers: list[str]) -> list[str]:
     API), so what the engine trades can't drift by caller. Empty raises: a
     cycle with nothing to trade is a caller mistake, not an empty result.
     """
-    universe: list[str] = []
-    for ticker in tickers:
-        upper = ticker.strip().upper()
-        if upper and upper not in universe:
-            universe.append(upper)
-    if not universe:
-        raise ValueError("universe is empty — a run needs at least one ticker")
-    return universe
+    return normalize_tickers(tickers)
 
 
 def load_spec(path: str | Path) -> FundSpec:

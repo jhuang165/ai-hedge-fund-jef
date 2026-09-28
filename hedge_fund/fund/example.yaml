@@ -24,6 +24,15 @@ strategies:
 risk:
   max_position_pct: 0.25      # master risk: no single name above 25% of equity
   max_gross_exposure: 1.0     # unlevered, across the netted book
+  max_net_exposure: 1.0       # how far the book may lean long or short (0 = dollar-neutral)
+  max_drawdown_pct: 0.20      # kill-switch: 20% below peak NAV, close to flat and stay flat
+execution:
+  min_trade_pct: 0.005        # skip rebalances under 0.5% of equity; exits always trade
+  commission_bps: 0           # broker fee per side, bps of notional (backtest assumption)
+  slippage_bps: 5             # fill moves 5 bps against you from the decision close
+dividends:
+  accrue: true                # accrue each held name's trailing dividend (payout x EPS) between cycles
+  benchmark_yield: 0.013      # assumed annual yield on the benchmark curve (SPY ~1.3%); 0 = price-only
 capital: 100000
 rebalance: weekly             # daily | weekly | monthly — how often the fund trades
 benchmark: SPY                # measured against; also the backtest's trading-day grid

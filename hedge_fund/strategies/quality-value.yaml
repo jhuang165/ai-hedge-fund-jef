@@ -1,0 +1,10 @@
+# Quality-value — systematic value with a quality screen.
+# Cheap against the stock's own filed history, and good on ROE/ROIC/margins/
+# leverage. A quant take on the deep-value desk, with no LLM spend.
+name: quality-value
+display_name: Quality Value
+models:
+  - name: quality-value
+blend:
+  method: conviction_weighted
+  gross_target: 1.0

@@ -1,0 +1,17 @@
+# Multifactor — systematic, market-neutral, no LLM.
+# The four quant factors netted into one sleeve: momentum and quality-value
+# carry the book; insider flow and short-term reversal are half-weight
+# tilts. Long the best-ranked names relative to the rest, short the worst.
+name: multifactor
+display_name: Multifactor
+models:
+  - name: momentum
+  - name: quality-value
+  - name: insider-flow
+    weight: 0.5
+  - name: mean-reversion
+    weight: 0.5
+blend:
+  method: conviction_weighted
+  gross_target: 1.0
+  market_neutral: true

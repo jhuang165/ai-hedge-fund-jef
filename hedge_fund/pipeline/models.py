@@ -43,6 +43,7 @@ class CycleRecord(BaseModel):
     spec: FundSpec                      # self-contained audit copy
     universe: list[str]                 # the tickers this cycle was asked to trade
     marks: dict[str, float]             # ticker -> close used for sizing and NAV
+    vols: dict[str, float] = {}         # ticker -> realized vol used for risk-scaled sizing
     skipped: list[TickerSkip]
     strategies: list[StrategyRecord]    # every sleeve, incl. each thesis
     target_weights: dict[str, float]    # the NETTED book, pre-risk
@@ -50,8 +51,12 @@ class CycleRecord(BaseModel):
     final_weights: dict[str, float]     # post-risk
     equity_before: float
     cash_before: float
+    dividends: dict[str, float] = {}    # ticker -> dividend cash accrued since the prior cycle (negative: owed on a short)
+    peak_nav: float | None = None       # high-water mark the caller supplied (None: no history)
+    drawdown: float | None = None       # equity_before's fall from peak_nav, as a fraction
     orders: list[Order]
     fills: list[Fill]
     positions: dict[str, int]           # signed shares after fills
     cash: float
     nav: float                          # cash + sum(shares * mark)
+    costs: float = 0.0                  # commission + slippage paid this cycle, already out of cash
