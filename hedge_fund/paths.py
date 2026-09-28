@@ -17,11 +17,15 @@ from pathlib import Path
 USER_DIR = Path.home() / ".hedge-fund"
 MANDATES_DIR = USER_DIR / "mandates"
 CACHE_DIR = USER_DIR / "cache"
+RESEARCH_DIR = USER_DIR / "research"   # research reports saved by the web app
 ENV_PATH = USER_DIR / ".env"
 
-# The example mandate ships inside the package; it is copied out (never read
-# in place) so users edit their copy, not the install.
+UNIVERSES_DIR = USER_DIR / "universes"
+
+# The example mandate and universe ship inside the package; they are copied
+# out (never read in place) so users edit their copy, not the install.
 EXAMPLE_MANDATE = Path(__file__).resolve().parent / "fund" / "example.yaml"
+EXAMPLE_UNIVERSE = Path(__file__).resolve().parent / "fund" / "example-universe.yaml"
 
 
 def ensure_mandates_dir() -> Path:
@@ -30,3 +34,11 @@ def ensure_mandates_dir() -> Path:
         MANDATES_DIR.mkdir(parents=True)
         shutil.copy(EXAMPLE_MANDATE, MANDATES_DIR / "example.yaml")
     return MANDATES_DIR
+
+
+def ensure_universes_dir() -> Path:
+    """Create the universes dir on first use, seeded with the example."""
+    if not UNIVERSES_DIR.exists():
+        UNIVERSES_DIR.mkdir(parents=True)
+        shutil.copy(EXAMPLE_UNIVERSE, UNIVERSES_DIR / "example.yaml")
+    return UNIVERSES_DIR

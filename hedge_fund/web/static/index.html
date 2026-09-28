@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>aihf — AI hedge fund</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">aihf <span class="version" id="version"></span></div>
+  <nav>
+    <a href="#research" data-view="research">Research</a>
+    <a href="#fund" data-view="fund">Fund</a>
+    <a href="#reports" data-view="reports">Reports</a>
+    <a href="#settings" data-view="settings">Settings</a>
+  </nav>
+  <div class="topbar-right" id="key-warning"></div>
+</header>
+
+<main>
+  <!-- ------------------------------------------------------------ Research -->
+  <section id="view-research" class="view">
+    <div class="split">
+      <form id="research-form" class="panel form">
+        <h2>Research desk</h2>
+        <p class="hint">One name per line. Add <code>:SHARES@COST</code> to describe a position you hold
+          (negative shares for a short) — the report then answers add / hold / trim / exit instead of buy / watch / avoid.</p>
+        <label>Tickers
+          <textarea id="research-targets" rows="6" placeholder="AAPL&#10;MSFT:20@400&#10;NVDA:-5@120" spellcheck="false"></textarea>
+        </label>
+        <div class="row">
+          <label>As of <input type="date" id="research-date"></label>
+          <label>Model <select id="research-model"></select></label>
+        </div>
+        <button type="submit" class="primary" id="research-run">Run research</button>
+        <div class="progress" id="research-progress" hidden>
+          <div class="bar"><div class="fill"></div></div>
+          <div class="progress-label"></div>
+        </div>
+        <div class="error" id="research-error" hidden></div>
+      </form>
+
+      <div class="panel" id="research-results">
+        <h2>Ranked <span class="muted" id="research-results-sub"></span></h2>
+        <div id="research-table" class="empty">Run research to rank names, best-liked first.</div>
+      </div>
+    </div>
+    <div class="panel report" id="research-report" hidden></div>
+  </section>
+
+  <!-- ---------------------------------------------------------------- Fund -->
+  <section id="view-fund" class="view">
+    <div class="split">
+      <form id="fund-form" class="panel form">
+        <h2>Fund runner</h2>
+        <label>Mandate
+          <div class="row tight">
+            <select id="fund-mandate"></select>
+            <button type="button" class="ghost" id="fund-new-toggle">new…</button>
+            <button type="button" class="ghost danger" id="fund-delete" title="delete this mandate">delete</button>
+          </div>
+        </label>
+        <div id="fund-mandate-summary" class="hint"></div>
+        <label>Tickers <input id="fund-tickers" placeholder="AAPL, MSFT, NVDA" spellcheck="false"></label>
+        <div class="row">
+          <label>As of <input type="date" id="fund-date"></label>
+          <label>Backtest from <input type="date" id="fund-start"></label>
+        </div>
+        <label>Model <select id="fund-model"></select></label>
+        <div class="row">
+          <button type="submit" class="primary" data-mode="cycle">Run one cycle</button>
+          <button type="submit" class="primary alt" data-mode="backtest">Backtest</button>
+        </div>
+        <div class="progress" id="fund-progress" hidden>
+          <div class="bar"><div class="fill"></div></div>
+          <div class="progress-label"></div>
+        </div>
+        <div class="error" id="fund-error" hidden></div>
+      </form>
+
+      <form id="fund-new" class="panel form" hidden>
+        <h2>New fund</h2>
+        <label>Name <input id="new-name" placeholder="my-fund" pattern="[A-Za-z0-9][A-Za-z0-9._\-]*" required></label>
+        <div class="hint">Strategies from the library, with a capital slice each (relative weights).</div>
+        <div id="new-strategies" class="strategy-list"></div>
+        <div class="row">
+          <label>Max position <input type="number" id="new-maxpos" value="0.25" step="any" min="0.01" max="1"></label>
+          <label>Max gross <input type="number" id="new-maxgross" value="1.0" step="any" min="0.1"></label>
+        </div>
+        <div class="row">
+          <label>Capital <input type="number" id="new-capital" value="100000" step="any" min="1"></label>
+          <label>Rebalance
+            <select id="new-rebalance"><option>daily</option><option selected>weekly</option><option>monthly</option></select>
+          </label>
+          <label>Benchmark <input id="new-benchmark" value="SPY"></label>
+        </div>
+        <div class="row">
+          <button type="submit" class="primary">Save mandate</button>
+          <button type="button" class="ghost" id="fund-new-cancel">cancel</button>
+        </div>
+        <div class="error" id="new-error" hidden></div>
+      </form>
+    </div>
+    <div class="panel" id="fund-results" hidden></div>
+  </section>
+
+  <!-- ------------------------------------------------------------- Reports -->
+  <section id="view-reports" class="view">
+    <div class="panel">
+      <h2>Saved research <span class="muted" id="reports-sub"></span></h2>
+      <div id="reports-table" class="empty">No saved reports yet — every research run is saved here.</div>
+    </div>
+    <div class="panel" id="scorecard" hidden>
+    </div>
+    <div class="panel report" id="reports-report" hidden></div>
+  </section>
+
+  <!-- ------------------------------------------------------------ Settings -->
+  <section id="view-settings" class="view">
+    <div class="panel">
+      <h2>API keys</h2>
+      <p class="hint">Saved to <code id="env-path"></code> (0600). Keys exported in your shell win over the saved file.</p>
+      <div id="keys-table"></div>
+    </div>
+    <div class="panel">
+      <h2>LLM models</h2>
+      <div id="llm-table"></div>
+    </div>
+    <div class="panel">
+      <h2>Alpha models on the desk</h2>
+      <div id="alpha-table"></div>
+    </div>
+  </section>
+</main>
+
+<footer class="foot">Educational use only. Not investment advice. Nothing here places a trade.</footer>
+<script src="/static/app.js"></script>
+</body>
+</html>

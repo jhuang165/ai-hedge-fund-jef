@@ -17,8 +17,12 @@ from hedge_fund.pipeline.run_cycle import run_cycle
 class FakeDataClient:
     """Canned closes per ticker; a ticker absent from `closes` has no bars."""
 
-    def __init__(self, closes):
+    def __init__(self, closes, metrics=None):
         self._closes = closes
+        self._metrics = metrics or {}
+
+    def get_financial_metrics(self, ticker, end_date, period="ttm", limit=10):
+        return self._metrics.get(ticker, [])[:limit]
 
     def get_prices(self, ticker, start_date, end_date, **kwargs):
         close = self._closes.get(ticker)
@@ -251,3 +255,130 @@ def test_analyst_error_propagates():
     with pytest.raises(ConnectionError):
         run_cycle(fund, "2024-06-03", SimBroker(cash=100_000.0),
                   FakeDataClient(CLOSES), UNIVERSE)
+
+
+# ---------------------------------------------------------------------------
+# Risk-scaled sizing
+# ---------------------------------------------------------------------------
+
+class HistoryDataClient(FakeDataClient):
+    """A year of daily bars per ticker with a chosen daily amplitude, so the
+    price snapshot can compute a realized vol; the last close is `closes`."""
+
+    def __init__(self, closes, amplitude):
+        super().__init__(closes)
+        self._amp = amplitude
+        self.price_calls = 0
+
+    def get_prices(self, ticker, start_date, end_date, **kwargs):
+        from datetime import date, timedelta
+        self.price_calls += 1
+        close = self._closes.get(ticker)
+        if close is None:
+            return []
+        end = date.fromisoformat(end_date)
+        start = date.fromisoformat(start_date)
+        bars, day, i = [], end, 0
+        while day >= start:
+            if day.weekday() < 5:
+                # Alternate up and down by the amplitude: vol scales with it.
+                px = close * (1 + self._amp[ticker] * (1 if i % 2 else -1))
+                bars.append(Price(open=px, close=px, high=px, low=px, volume=1000,
+                                  time=f"{day.isoformat()}T00:00:00Z"))
+                i += 1
+            day -= timedelta(days=1)
+        bars[0] = Price(open=close, close=close, high=close, low=close, volume=1000,
+                        time=f"{end_date}T00:00:00Z")
+        return sorted(bars, key=lambda b: b.time)
+
+
+def test_vol_scaled_sizing_tilts_toward_the_calmer_name():
+    spec = _spec(max_position_pct=1.0)
+    fund = Fund(spec, models={"solo": [FakeAnalyst("a", views={"AAPL": 1.0, "NVDA": 1.0})]})
+    data = HistoryDataClient({"AAPL": 200.0, "NVDA": 100.0}, {"AAPL": 0.01, "NVDA": 0.04})
+
+    record = run_cycle(fund, "2024-06-03", SimBroker(cash=100_000.0), data, ["AAPL", "NVDA"])
+
+    assert set(record.vols) == {"AAPL", "NVDA"}
+    assert record.vols["NVDA"] > record.vols["AAPL"]
+    # Equal views: the calmer name gets more dollars, and the ratio of the
+    # weights is the inverse ratio of the vols.
+    w = record.target_weights
+    assert w["AAPL"] > w["NVDA"] > 0
+    assert w["AAPL"] / w["NVDA"] == pytest.approx(record.vols["NVDA"] / record.vols["AAPL"])
+
+
+def test_vol_scaling_off_means_no_vols_fetched():
+    spec = _spec(strategies=[{"name": "solo", "models": [{"name": "a"}],
+                              "blend": {"vol_scaled": False}}], max_position_pct=1.0)
+    fund = Fund(spec, models={"solo": [FakeAnalyst("a", views={"AAPL": 1.0, "NVDA": 1.0})]})
+    data = HistoryDataClient({"AAPL": 200.0, "NVDA": 100.0}, {"AAPL": 0.01, "NVDA": 0.04})
+
+    record = run_cycle(fund, "2024-06-03", SimBroker(cash=100_000.0), data, ["AAPL", "NVDA"])
+
+    assert record.vols == {}
+    assert data.price_calls == 2  # marks only, no snapshot fetch
+    assert record.target_weights["AAPL"] == pytest.approx(record.target_weights["NVDA"])
+
+
+def test_too_little_history_sizes_as_typical_name():
+    """The default fake serves one bar: no vol, plain conviction weights."""
+    spec = _spec(max_position_pct=1.0)
+    fund = Fund(spec, models={"solo": [FakeAnalyst("a", views={"AAPL": 1.0, "NVDA": 1.0})]})
+    record = run_cycle(fund, "2024-06-03", SimBroker(cash=100_000.0),
+                       FakeDataClient(CLOSES), ["AAPL", "NVDA"])
+    assert record.vols == {}
+    assert record.target_weights["AAPL"] == pytest.approx(0.5)
+
+
+# ---------------------------------------------------------------------------
+# Dividend accrual
+# ---------------------------------------------------------------------------
+
+def _payer(dps_ttm, eps=4.0):
+    from hedge_fund.data.models import FinancialMetrics
+    return [FinancialMetrics(ticker="X", report_period="2024-03-31", period="ttm",
+                             filing_date="2024-05-01", earnings_per_share=eps,
+                             payout_ratio=dps_ttm / eps)]
+
+
+def test_dividends_accrue_on_the_held_book_between_cycles():
+    spec = _spec(max_position_pct=1.0)
+    fund = Fund(spec, models={"solo": [FakeAnalyst("a", views={"AAPL": 1.0})]})
+    data = FakeDataClient(CLOSES, metrics={"AAPL": _payer(dps_ttm=3.65)})
+    broker = SimBroker(cash=100_000.0)
+    first = run_cycle(fund, "2024-06-03", broker, data, ["AAPL"])
+    assert first.dividends == {}                       # nothing to accrue from
+    assert first.positions == {"AAPL": 500}
+
+    second = run_cycle(fund, "2024-06-13", broker, data, ["AAPL"], prev_as_of="2024-06-03")
+    # 500 shares x $3.65/yr x 10/365 days = $50.
+    assert second.dividends == {"AAPL": pytest.approx(50.0)}
+    assert second.cash_before == pytest.approx(first.cash + 50.0)
+    assert second.equity_before == pytest.approx(first.nav + 50.0)
+
+
+def test_short_owes_the_dividend_and_nonpayers_accrue_nothing():
+    spec = _spec(max_position_pct=1.0)
+    fund = Fund(spec, models={"solo": [FakeAnalyst("a", views={"AAPL": -1.0, "MSFT": 1.0})]})
+    data = FakeDataClient(CLOSES, metrics={"AAPL": _payer(dps_ttm=3.65),
+                                           "MSFT": _payer(dps_ttm=0.0)})
+    broker = SimBroker(cash=100_000.0)
+    first = run_cycle(fund, "2024-06-03", broker, data, ["AAPL", "MSFT"])
+    assert first.positions["AAPL"] < 0 < first.positions["MSFT"]
+    second = run_cycle(fund, "2024-06-13", broker, data, ["AAPL", "MSFT"], prev_as_of="2024-06-03")
+    assert second.dividends["AAPL"] == pytest.approx(first.positions["AAPL"] * 3.65 * 10 / 365)
+    assert second.dividends["AAPL"] < 0
+    assert "MSFT" not in second.dividends
+
+
+def test_accrual_can_be_switched_off():
+    spec = FundSpec(name="t", strategies=[{"name": "solo", "models": [{"name": "a"}]}],
+                    risk={"max_position_pct": 1.0, "max_gross_exposure": 1.0},
+                    dividends={"accrue": False}, capital=100_000.0)
+    fund = Fund(spec, models={"solo": [FakeAnalyst("a", views={"AAPL": 1.0})]})
+    data = FakeDataClient(CLOSES, metrics={"AAPL": _payer(dps_ttm=3.65)})
+    broker = SimBroker(cash=100_000.0)
+    run_cycle(fund, "2024-06-03", broker, data, ["AAPL"])
+    second = run_cycle(fund, "2024-06-13", broker, data, ["AAPL"], prev_as_of="2024-06-03")
+    assert second.dividends == {}

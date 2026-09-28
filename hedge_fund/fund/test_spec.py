@@ -63,6 +63,22 @@ def test_defaults_applied():
     assert spec.capital == 100_000.0
     assert spec.rebalance == "weekly"
     assert spec.benchmark == "SPY"
+    # Execution defaults: a half-percent no-trade band, no commission, and
+    # five basis points of slippage — a backtest is charged by default.
+    assert spec.execution.min_trade_pct == 0.005
+    assert spec.execution.commission_bps == 0.0
+    assert spec.execution.slippage_bps == 5.0
+    assert spec.dividends.accrue is True
+    assert spec.dividends.benchmark_yield == 0.0
+
+
+def test_execution_policy_validation():
+    spec = FundSpec(**{**MINIMAL, "execution": {"min_trade_pct": 0, "slippage_bps": 0}})
+    assert spec.execution.min_trade_pct == 0.0 and spec.execution.slippage_bps == 0.0
+    with pytest.raises(ValueError):
+        FundSpec(**{**MINIMAL, "execution": {"slippage_bps": -1}})
+    with pytest.raises(ValueError):  # extra='forbid' catches typos
+        FundSpec(**{**MINIMAL, "execution": {"slipage_bps": 5}})
 
 
 def test_rebalance_cadence_validated():

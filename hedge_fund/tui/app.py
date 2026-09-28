@@ -1242,7 +1242,11 @@ class RunScreen(Screen):
                     future.result()
 
             fund = Fund(spec)
-            broker = SimBroker(cash=spec.capital)
+            broker = SimBroker(
+                cash=spec.capital,
+                commission_bps=spec.execution.commission_bps,
+                slippage_bps=spec.execution.slippage_bps,
+            )
             with FDClient() as raw:
                 record = run_cycle(fund, as_of, broker, CachedDataClient(raw),
                                    universe)
@@ -2022,6 +2026,7 @@ class BacktestScreen(Screen):
             (result.fund, f"bold {CYAN}"),
             (f"  {result.start} → {result.end} · {result.rebalance} "
              f"rebalance · {m.n_cycles} cycles · {m.n_orders} orders · "
+             f"costs {m.costs_pct:.2%} · dividends ${m.total_dividends:,.0f} · "
              f"{m.annualized_return_pct:+.1%} annualized",
              MUTED),
         ))
@@ -2030,10 +2035,26 @@ class BacktestScreen(Screen):
             m.total_return_pct, m.benchmark_return_pct,
             m.excess_return_pct, m.sharpe_ratio, m.max_drawdown_pct,
         )
-        self.query_one("#result-summary", Static).update(
-            Text.assemble(("✓ ", f"bold {GREEN}"),
-                          ("Saved backtest record to ", TEXT),
-                          (str(path), f"bold {BRIGHT}")))
+        summary = [("✓ ", f"bold {GREEN}"),
+                   ("Saved backtest record to ", TEXT),
+                   (str(path), f"bold {BRIGHT}")]
+        # Who earned it: each strategy's paper sleeve, then what the sleeves
+        # do not explain (master risk, share sizing, cash, costs).
+        for sa in result.attribution.strategies:
+            summary.append((f"\n  {sa.name} ({sa.slice:.0%})  ", TEXT))
+            summary.append((f"sleeve {sa.total_return_pct:+.1%}",
+                            GREEN if sa.total_return_pct >= 0 else RED))
+            summary.append((f" · sharpe {sa.sharpe_ratio:.2f} · "
+                            f"max dd {sa.max_drawdown_pct:.1%} · "
+                            f"contributed {sa.contribution_pct:+.1%}", MUTED))
+        summary.append((f"\n  residual (risk, sizing, cash, costs) "
+                        f"{result.attribution.residual_pct:+.1%}", MUTED))
+        if m.kill_switch_date:
+            summary.append((f"\n  kill-switch: drawdown limit hit on "
+                            f"{m.kill_switch_date}; the fund closed to flat", f"bold {RED}"))
+        for warning in result.warnings:
+            summary.append((f"\n  ⚠ {warning}", "bold yellow"))
+        self.query_one("#result-summary", Static).update(Text.assemble(*summary))
         self.query_one("#result-summary", Static).remove_class("hidden")
         menu = self.query_one("#bt-done-menu", OptionList)
         menu.remove_class("hidden")

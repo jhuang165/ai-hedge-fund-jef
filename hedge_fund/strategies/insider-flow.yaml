@@ -1,0 +1,11 @@
+# Insider flow — systematic, event-driven.
+# Follow open-market insider buying (and, more cautiously, selling) from
+# Form 4 filings over the trailing quarter. Long-biased: insider purchases
+# are the informative half of the signal.
+name: insider-flow
+display_name: Insider Flow
+models:
+  - name: insider-flow
+blend:
+  method: conviction_weighted
+  gross_target: 1.0

@@ -54,3 +54,62 @@ def test_short_target_sells_past_zero():
     assert len(orders) == 1
     assert orders[0].side == "sell"
     assert orders[0].quantity == 20
+
+
+# ---------------------------------------------------------------------------
+# No-trade band
+# ---------------------------------------------------------------------------
+
+def test_band_skips_small_rebalance():
+    # Held 100, target 125: a 250-dollar top-up on 10k equity is 2.5%, under a 5% band.
+    orders = build_orders(
+        {"AAPL": 0.125}, _positions(AAPL=100), {"AAPL": 10.0}, equity=10_000.0,
+        min_trade_pct=0.05,
+    )
+    assert orders == []
+
+
+def test_band_lets_large_rebalance_through():
+    orders = build_orders(
+        {"AAPL": 0.20}, _positions(AAPL=100), {"AAPL": 10.0}, equity=10_000.0,
+        min_trade_pct=0.05,
+    )
+    assert len(orders) == 1 and orders[0].quantity == 100
+
+
+def test_band_never_blocks_an_exit():
+    # Two dust positions: one closed by an explicit zero target, one by absence.
+    orders = build_orders(
+        {"AAPL": 0.0}, _positions(AAPL=1, MSFT=1), {"AAPL": 10.0, "MSFT": 10.0},
+        equity=10_000.0, min_trade_pct=0.05,
+    )
+    assert [(o.ticker, o.side, o.quantity) for o in orders] == [
+        ("AAPL", "sell", 1), ("MSFT", "sell", 1),
+    ]
+
+
+def test_band_does_not_open_a_position_below_it():
+    orders = build_orders({"AAPL": 0.01}, {}, {"AAPL": 10.0}, equity=10_000.0,
+                          min_trade_pct=0.05)
+    assert orders == []
+
+
+def test_band_applies_to_shorts_too():
+    # Short 100, target short 125 -> skipped; target flat -> covers in full.
+    assert build_orders({"AAPL": -0.125}, _positions(AAPL=-100), {"AAPL": 10.0},
+                        equity=10_000.0, min_trade_pct=0.05) == []
+    cover = build_orders({}, _positions(AAPL=-100), {"AAPL": 10.0},
+                         equity=10_000.0, min_trade_pct=0.05)
+    assert [(o.side, o.quantity) for o in cover] == [("buy", 100)]
+
+
+def test_zero_band_is_the_old_behavior():
+    orders = build_orders({"AAPL": 0.125}, _positions(AAPL=100), {"AAPL": 10.0},
+                          equity=10_000.0, min_trade_pct=0.0)
+    assert len(orders) == 1 and orders[0].quantity == 25
+
+
+def test_negative_band_rejected():
+    import pytest
+    with pytest.raises(ValueError):
+        build_orders({}, {}, {}, equity=1.0, min_trade_pct=-0.1)

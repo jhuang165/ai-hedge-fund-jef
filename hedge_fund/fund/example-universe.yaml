@@ -1,0 +1,16 @@
+# An example dated universe: which names were investable, and since when.
+#
+# A backtest over tickers you type in today is survivorship-biased — every
+# name on the list is one you already know made it. A dated universe gives
+# point-in-time membership instead: each entry is in force from its `from`
+# date until the next entry, so names join and leave the book as they did
+# in history. A name that drops out is closed at the next cycle's mark.
+#
+#   aihf ~/.hedge-fund/mandates/example.yaml --universe ~/.hedge-fund/universes/example.yaml --backtest
+#
+# Fill this in from a real point-in-time source (index constituent history,
+# a screen you ran at the time). The dates below are illustrative only.
+- from: 2023-01-01
+  tickers: [AAPL, MSFT, GOOGL, AMZN, META, NVDA, TSLA, BRK.B, JPM, XOM]
+- from: 2024-01-01
+  tickers: [AAPL, MSFT, GOOGL, AMZN, META, NVDA, TSLA, BRK.B, JPM, XOM, AVGO, LLY]

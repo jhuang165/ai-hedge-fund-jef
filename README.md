@@ -40,6 +40,7 @@ The app asks for keys the first time it needs them and saves them to `~/.hedge-f
 
 - A [Financial Datasets](https://financialdatasets.ai) API key, for prices, fundamentals, and earnings.
 - One LLM API key for the LLM-powered alpha models. Supported providers: Anthropic, OpenAI, DeepSeek, Google, xAI, Kimi.
+- Optionally, a [Tavily](https://tavily.com) API key (`TAVILY_API_KEY`) — only needed for `aihf research`, the web-search command below.
 
 Keys exported in your shell always win over the saved file.
 
@@ -52,6 +53,16 @@ aihf
 ```
 
 With no arguments, this launches the interactive terminal app. Build a fund — pick stocks, strategies, rebalance cadence — or backtest a saved fund and watch its equity curve draw against its benchmark. Funds you build are saved as mandate files in `~/.hedge-fund/mandates/`.
+
+### Web app
+
+The same engine in a browser, on your machine:
+
+```bash
+aihf web
+```
+
+This starts a local server at `http://127.0.0.1:8787` and opens it. The **Research** page ranks any list of names (with positions, as above) and shows each full report: the action and its rationale, the thesis, the cited catalysts and risks, the desk readout of every quant model, and the price-action snapshot. The **Fund** page runs a saved mandate for one cycle or backtests it with a live equity curve against the benchmark, and can compose a new mandate from the strategy library. Every research run is saved under `~/.hedge-fund/research/` and browsable on the **Reports** page; **Settings** shows which API keys are set and lets you save them. It binds to localhost only and has no authentication.
 
 ### Non-interactive
 
@@ -68,6 +79,66 @@ aihf ~/.hedge-fund/mandates/example.yaml --tickers AAPL,MSFT --backtest
 ```
 
 A mandate is the desk — strategies, staff, risk, capital, cadence — and never names tickers; `--tickers` says what to point it at for this run.
+
+A backtest is charged for trading. The mandate's `execution` block sets the simulated broker's commission and slippage (five basis points of slippage per side by default) and a no-trade band that skips rebalances too small to be worth their costs (half a percent of equity by default; exits always trade in full). The costs paid show up on every cycle record and in the backtest metrics, so the equity curve is net of friction.
+
+A backtest over tickers you type in today is survivorship-biased: every name on the list is one you already know made it. The result carries a warning saying so, on the receipt and on every screen. To remove the bias, backtest over a dated universe file instead, which lists which names were investable and since when, so names join and leave the book as they did in history. An example lives at `~/.hedge-fund/universes/example.yaml`:
+
+```bash
+aihf ~/.hedge-fund/mandates/example.yaml --universe ~/.hedge-fund/universes/example.yaml --backtest
+```
+
+Master risk has four hard limits: a per-name cap, a gross-exposure cap, a net-exposure cap on how far the book may lean long or short, and a drawdown kill-switch. When equity falls that far below its peak, the fund closes to flat and stays flat, and the backtest reports the date it happened.
+
+Dividends count on both sides. The price feed is unadjusted and carries no dividend events, so the fund accrues each held name's trailing dividend per share, the filed payout ratio times EPS, pro-rated between cycles, and a short owes it. The benchmark is an ETF that files nothing, so its yield is a stated assumption in the mandate's `dividends` block. The personas and the quality-value model also judge valuation at the current price rather than the price the filing was struck at: P/E, P/B, and free-cash-flow yield are recomputed from the filed per-share figures and the last close, snapped to a ten-percent price grid so a persona re-reasons when the valuation has moved a tenth, not on every tick.
+
+Every backtest also says who earned it. Each strategy gets a paper sleeve, its own target weights compounded on its capital slice at the fund's marks, with its own return, Sharpe, and drawdown, and the residual reports what the sleeves do not explain: master risk clamps, whole-share sizing, cash drag, and costs. Sizing inside a sleeve is risk-scaled by default, so two names the desk likes equally get equal risk rather than equal dollars; a strategy can switch that off with `vol_scaled: false` in its blend policy.
+
+### Research a stock, or your positions
+
+Diagnose a ticker from live web search, its point-in-time fundamentals, its price action, and a readout of every systematic model on the desk (momentum, short-term reversal, insider flow, quality-value, post-earnings drift). The report JSON prints to stdout; a summary with the action, the desk readout, and the cited sources goes to stderr:
+
+```bash
+aihf research AAPL
+```
+
+Tell it what you hold and it answers the question you are actually asking. A bare ticker gets **buy / watch / avoid**; a ticker with a position gets **add / hold / trim / exit**, judged on the position as it stands (never anchored on your cost basis):
+
+```bash
+aihf research AAPL:100@150.25
+```
+
+Several names come back ranked, best-liked first, in one table. Combine direct tickers with a portfolio file of `{ticker, shares, cost_basis}` entries (negative shares for a short):
+
+```bash
+aihf research NVDA MSFT:20@400 --portfolio ~/holdings.yaml
+```
+
+This is read-only and stands apart from the fund: it touches no mandate, trades nothing, and writes nothing to the ledger. Every run is saved under `~/.hedge-fund/research/`. It needs `TAVILY_API_KEY` in addition to your usual keys. Every catalyst and risk cites the sources it rests on, so you can check the claim against the page it came from, and the desk readout shows each model's arithmetic so you can check the numbers too.
+
+### Grade the research desk
+
+Nothing above checks whether "buy" beat "avoid". The scorecard does. It takes every saved report old enough to judge, measures the stock's return over the horizon after it less the benchmark's, and grades whether it went the way the call said:
+
+```bash
+aihf scorecard --horizon 90 --benchmark SPY
+```
+
+Three numbers say whether the desk has an edge: the hit rate of its directional calls, the spread between bullish and bearish calls' average excess return, and the rank correlation between conviction and outcome. Calls whose horizon has not elapsed are pending, not wrong. The web app shows the same scorecard on its Reports page.
+
+### Validate a backtest before believing it
+
+Every knob in a mandate was chosen while looking at some backtest. Two cheap checks catch most fitted results. A hold-out split backtests the window in two halves, the one you tuned on and the one you did not, and reports how much the Sharpe decayed. A parameter sweep re-runs the backtest across values of any mandate field, reached by dotted path, and says whether the result depends on the choice:
+
+```bash
+aihf validate ~/.hedge-fund/mandates/example.yaml --tickers AAPL,MSFT --split 2025-01-01
+```
+
+```bash
+aihf validate ~/.hedge-fund/mandates/example.yaml --tickers AAPL,MSFT --sweep strategies.0.models.0.weight=1,2,4 --sweep execution.slippage_bps=0,5,20
+```
+
+A surface whose Sharpe changes sign across the grid, or swings by more than a full point, is reported as fragile.
 
 ## Development
 

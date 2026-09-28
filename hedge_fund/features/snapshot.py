@@ -20,14 +20,15 @@ import hashlib
 from pydantic import BaseModel
 
 from hedge_fund.data.protocol import DataClient
+from hedge_fund.features.errors import InsufficientData
+from hedge_fund.features.technicals import last_close
+from hedge_fund.features.valuation import quantize_price, reprice
+
+__all__ = ["FundamentalsSnapshot", "InsufficientData", "PeriodFundamentals", "build_snapshot"]
 
 # An agent can't say anything defensible about a company with less history
 # than this (one year of ttm rows).
 MIN_PERIODS = 4
-
-
-class InsufficientData(ValueError):
-    """Not enough point-in-time history to build a snapshot."""
 
 
 class PeriodFundamentals(BaseModel):
@@ -57,6 +58,15 @@ class FundamentalsSnapshot(BaseModel):
     sector: str | None = None
     industry: str | None = None
     periods: list[PeriodFundamentals]
+
+    # Valuation at the current price. The filed rows carry multiples struck
+    # at filing time; these are re-struck at the last close, snapped to a
+    # coarse grid so the prompt (and its cache key) only changes when the
+    # price has moved enough to change the argument. None: no price found.
+    price: float | None = None
+    pe_at_price: float | None = None
+    pb_at_price: float | None = None
+    fcf_yield_at_price: float | None = None
 
     # Derived aggregates (computed in build_snapshot, not by the LLM)
     roe_avg: float | None = None
@@ -92,13 +102,18 @@ class FundamentalsSnapshot(BaseModel):
             "Treat the most recent filing shown as the present.",
             "",
             "Summary:",
-            f"  Market cap (latest filed): {_fmt(self.market_cap_latest)}",
+            (f"  Price: ~{_fmt(self.price)} (rounded)  |  Market cap at that price: "
+             f"{_fmt(self.market_cap_latest)}  |  P/E {_fmt(self.pe_at_price)}  |  "
+             f"P/B {_fmt(self.pb_at_price)}  |  FCF yield {_fmt(self.fcf_yield_at_price)}"
+             if self.price is not None else
+             f"  Market cap (latest filed): {_fmt(self.market_cap_latest)}"),
             f"  ROE avg: {_fmt(self.roe_avg)}  |  Net margin avg: {_fmt(self.net_margin_avg)}",
             f"  Gross margin trend (latest-oldest): {_fmt(self.gross_margin_trend)}",
             f"  Book value/share CAGR: {_fmt(self.bvps_cagr)}",
             f"  Debt/equity (latest): {_fmt(self.debt_to_equity_latest)}",
             "",
-            "History (trailing-twelve-month periods, newest first):",
+            "History (trailing-twelve-month periods, newest first; valuation "
+        "columns as struck at each filing):",
             "period | filed | mktcap | P/E | ROE | gross_m | op_m | net_m | D/E "
             "| curr | rev_gr | EPS | BVPS | FCF/sh",
         ]
@@ -120,8 +135,15 @@ def build_snapshot(
     as_of: str,
     data_client: DataClient,
     periods: int = 20,
+    price_step: float = 0.10,
 ) -> FundamentalsSnapshot:
     """Build the point-in-time snapshot for (ticker, as_of).
+
+    The latest row's valuation is re-struck at the last close on or before
+    *as_of*, snapped to a geometric grid of *price_step* (0.10: 10% rungs)
+    so unchanged fundamentals and a price on the same rung render the same
+    prompt. 0 disables the snapping. No close within the mark lookback:
+    the filed valuation stands and `price` is None.
 
     Raises InsufficientData if fewer than MIN_PERIODS filed periods exist.
     Data-layer failures propagate (fail loud) — a broken snapshot must never
@@ -141,6 +163,13 @@ def build_snapshot(
     # which is latest-only — lookahead in a backtest.
     facts = data_client.get_company_facts(ticker)
 
+    price = None
+    latest = metrics[0]
+    mark = last_close(ticker, as_of, data_client)
+    if mark is not None:
+        price = quantize_price(mark[1], price_step)
+        latest = reprice(latest, price)
+
     rows = [
         PeriodFundamentals(**m.model_dump(include=set(PeriodFundamentals.model_fields)))
         for m in metrics
@@ -158,8 +187,12 @@ def build_snapshot(
         net_margin_avg=_avg([m.net_margin for m in metrics]),
         gross_margin_trend=_trend([m.gross_margin for m in metrics]),
         bvps_cagr=_cagr([m.book_value_per_share for m in metrics]),
-        debt_to_equity_latest=metrics[0].debt_to_equity,
-        market_cap_latest=metrics[0].market_cap,
+        debt_to_equity_latest=latest.debt_to_equity,
+        market_cap_latest=latest.market_cap,
+        price=price,
+        pe_at_price=latest.price_to_earnings_ratio if price is not None else None,
+        pb_at_price=latest.price_to_book_ratio if price is not None else None,
+        fcf_yield_at_price=latest.free_cash_flow_yield if price is not None else None,
     )
 
 
