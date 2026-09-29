@@ -35,7 +35,9 @@ class Fill(BaseModel):
     """An executed order at its actual fill price, plus what it cost to get
     there. `slippage` is the dollars lost to filling away from the order's
     reference price (quantity x |fill - reference|); `commission` is the
-    broker's fee. Both are already reflected in the broker's cash."""
+    broker's fee. Both are already reflected in the broker's cash. A real
+    broker's fill can beat the reference, so there `slippage` may be
+    negative."""
 
     ticker: str
     side: Literal["buy", "sell"]

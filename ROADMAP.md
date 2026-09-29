@@ -10,11 +10,11 @@ read [VISION.md](./VISION.md).
 
 ✅ Shipped · 🚧 In progress · ⬜ Planned
 
-**Current focus:** the paper broker. The ledger now carries the book: every run
-opens on the newest receipt's positions and cash and saves its own, so NAV is a
-track record rather than a reset to the mandate's capital. Next the paper broker,
-then the scheduler — that's the path from "run it by hand" to a fund that is
-genuinely always-on. In parallel: retiring the v1 CLI, which needs Ollama
+**Current focus:** the scheduler. The ledger carries the book between runs, and a
+fund can now paper-trade through an Alpaca paper account (`execution.broker:
+alpaca-paper`): real quotes and fills, the account as the book of record, checked
+against the receipts on every run. What's left between "run it by hand" and a fund
+that is genuinely always-on is the scheduler that runs it each market day. In parallel: retiring the v1 CLI, which needs Ollama
 (the free, local, no-key path) and the remaining investor personas ported.
 
 The tables below are a capability map, not a strict order; where items depend on
@@ -30,7 +30,7 @@ it in backtest, paper, or live mode (see [VISION.md](./VISION.md)).
 | `AlphaModel` / `Signal` interface — the contract every analyst implements | ✅ |
 | Backtesting engine — `backtest_fund`: the whole fund over history on `run_cycle`, equity curve vs the mandate's benchmark (plus the per-model harness) | ✅ |
 | Event-study engine — market-model abnormal returns (CARs) | ✅ |
-| `run_cycle` — one pipeline (data → analysts → portfolio → risk → execution → ledger), three modes | 🚧 (single cycle, run-today on a carried book, and the backtest loop ship; the paper broker is what remains) |
+| `run_cycle` — one pipeline (data → analysts → portfolio → risk → execution → ledger), three modes | 🚧 (backtest and paper ship: the backtest loop, and run-today on a carried book through the simulated broker or an Alpaca paper account; live is the remaining mode) |
 | Fund object — persistent mandate, staff, capital, books | ✅ (mandates, staffing, per-run receipts, and a book carried between runs; tickers are a run-time input, not part of the mandate) |
 | Persistent ledger — positions, every decision + thesis, orders, fills, NAV history | ✅ (every run saves a full `CycleRecord` receipt and the next opens on it — positions, cash, the high-water mark for the kill-switch, and the prior date dividends accrue from; runs move forward only; CLI, TUI, and web runner all go through `pipeline/ledger.py`) |
 | LLM provider layer — one client factory (`make_llm`) routed by the model registry: Anthropic · OpenAI · DeepSeek · Google · xAI · Kimi | ✅ (Ollama next — the free local path, and the last blocker v1 holds over v2) |
@@ -87,8 +87,8 @@ can be backtested and combined — is a great first contribution:
 | Risk model — hard caps (pod-level budgets + fund-level limits) | 🚧 (fund-level position, net and gross caps plus a drawdown kill-switch ship; pod budgets with pods) |
 | Broker protocol — pluggable, mirrors the `DataClient` pattern | ✅ |
 | ↳ Simulated broker (backtest) | ✅ (commission + slippage cost model from the mandate's `execution` block; orders pass a no-trade band first) |
-| ↳ Paper broker | ⬜ |
-| ↳ Live broker (Interactive Brokers / Alpaca) — opt-in plugin, off by default | ⬜ |
+| ↳ Paper broker | ✅ (`AlpacaBroker` on Alpaca's paper API: market orders polled to a complete fill or an error, long↔short flips split in two, the account as the book of record; runs are market-hours and today-only, a first run needs a flat account, drift from the last receipt is flagged) |
+| ↳ Live broker (Interactive Brokers / Alpaca) — opt-in plugin, off by default | ⬜ (Alpaca's live endpoint takes the same requests as paper; what's missing is the deliberate opt-in) |
 
 ## Autonomy
 

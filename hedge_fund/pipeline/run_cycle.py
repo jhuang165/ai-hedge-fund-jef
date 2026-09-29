@@ -77,7 +77,10 @@ def run_cycle(
     )
 
     dividends: dict[str, float] = {}
-    if spec.dividends.accrue and prev_as_of is not None and held:
+    # A real broker's cash already holds the dividends that were paid; an
+    # estimate on top would count them twice.
+    books_dividends = getattr(broker, "books_dividends", False)
+    if spec.dividends.accrue and prev_as_of is not None and held and not books_dividends:
         dividends = _accrue_dividends(held, prev_as_of, as_of, data_client)
         for ticker, amount in dividends.items():
             broker.credit(amount, f"dividend accrual {ticker} {prev_as_of}..{as_of}")

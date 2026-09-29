@@ -53,6 +53,7 @@ from rich.console import Console
 from rich.table import Table
 
 from hedge_fund.backtesting import backtest_fund
+from hedge_fund.brokers import AlpacaError
 from hedge_fund.data import CachedDataClient, FDClient
 from hedge_fund.fund import Fund, load_spec, load_universe, normalize_universe
 from hedge_fund.paths import ENV_PATH, ensure_mandates_dir, ensure_universes_dir
@@ -141,6 +142,12 @@ def main() -> None:
         "(default: HEDGE_FUND_LLM_MODEL env, else the built-in default); quant models "
         "ignore it",
     )
+    parser.add_argument(
+        "--adopt-account", action="store_true",
+        help="alpaca-paper funds only: let the fund's first paper run take over "
+        "an account that already holds positions — they become the fund's to "
+        "keep or sell",
+    )
     parser.add_argument("--out", help="also write the record JSON to this file")
     args = parser.parse_args()
 
@@ -224,9 +231,13 @@ def main() -> None:
             spinner="dots",
         ):
             try:
-                ran = run_carried(fund, args.date, fd, universe)
+                ran = run_carried(fund, args.date, fd, universe,
+                                  adopt_account=args.adopt_account)
             except LedgerError as exc:
                 parser.error(str(exc))
+            except AlpacaError as exc:
+                console.print(f"[bold red]Alpaca: {exc}[/]")
+                sys.exit(1)
     record = ran.record
 
     print(record.model_dump_json(indent=2))
@@ -248,6 +259,8 @@ def main() -> None:
     )
     if record.skipped:
         console.print(f"[dim]skipped: {', '.join(s.ticker for s in record.skipped)}[/]")
+    for warning in record.warnings:
+        console.print(f"[bold yellow]  ⚠ {warning}[/]")
     console.print(f"[dim]{ran.carry.describe()}  ·  saved to {ran.path}[/]")
 
 

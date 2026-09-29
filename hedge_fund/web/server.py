@@ -72,6 +72,8 @@ DEFAULT_PORT = 8787
 _KEY_LABELS: dict[str, str] = {
     "FINANCIAL_DATASETS_API_KEY": "Financial Datasets (prices, fundamentals, filings)",
     "TAVILY_API_KEY": "Tavily (web search for research)",
+    "APCA_API_KEY_ID": "Alpaca paper key ID (funds on the alpaca-paper broker)",
+    "APCA_API_SECRET_KEY": "Alpaca paper secret key",
     **{env: f"{provider} (LLM)" for provider, env in PROVIDER_ENV_VARS.items()},
 }
 
@@ -336,7 +338,9 @@ def create_app() -> FastAPI:
     @app.post("/api/cycle")
     def cycle(body: CycleRequest) -> dict[str, Any]:
         spec, universe = _fund_inputs(body)
-        _require_keys("FINANCIAL_DATASETS_API_KEY")
+        _require_keys("FINANCIAL_DATASETS_API_KEY",
+                      *(["APCA_API_KEY_ID", "APCA_API_SECRET_KEY"]
+                        if spec.execution.broker == "alpaca-paper" else []))
         try:  # refuse up front, not as a failed job, a run that breaks the chain
             carried_book(spec, body.as_of)
         except LedgerError as exc:

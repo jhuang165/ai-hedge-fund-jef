@@ -1,8 +1,11 @@
 """Broker protocol — the interface all brokers implement.
 
 Mirrors the DataClient pattern (hedge_fund/data/protocol.py): structural typing, no
-inheritance required. SimBroker backs backtests; PaperBroker and a live
-broker implement the same three methods later.
+inheritance required. SimBroker backs backtests and simulated runs;
+AlpacaBroker backs paper runs against an Alpaca paper account.
+
+A broker whose cash already moves on real dividends sets a class attribute
+`books_dividends = True`, and the pipeline then accrues no estimate on top.
 """
 
 from __future__ import annotations

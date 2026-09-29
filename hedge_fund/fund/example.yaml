@@ -30,6 +30,7 @@ execution:
   min_trade_pct: 0.005        # skip rebalances under 0.5% of equity; exits always trade
   commission_bps: 0           # broker fee per side, bps of notional (backtest assumption)
   slippage_bps: 5             # fill moves 5 bps against you from the decision close
+  broker: sim                 # or alpaca-paper: trade an Alpaca paper account (APCA_API_KEY_ID / APCA_API_SECRET_KEY)
 dividends:
   accrue: true                # accrue each held name's trailing dividend (payout x EPS) between cycles
   benchmark_yield: 0.013      # assumed annual yield on the benchmark curve (SPY ~1.3%); 0 = price-only

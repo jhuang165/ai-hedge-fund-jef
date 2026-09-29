@@ -54,6 +54,8 @@ poetry run aihf       # or, equivalently: python -m hedge_fund.tui
 # carries no tickers — --tickers says what to point the fund at this run.
 # The book carries: the run opens on the newest saved receipt's positions and
 # cash (the mandate's capital the first time) and saves its own receipt.
+# With `execution.broker: alpaca-paper` the orders go to an Alpaca paper
+# account instead, and the account holds the book (see brokers/alpaca.py).
 poetry run aihf ~/.hedge-fund/mandates/example.yaml --tickers AAPL,MSFT,NVDA
 
 # Backtest a mandate: the same run_cycle looped over history at the

@@ -358,6 +358,20 @@ def test_dividends_accrue_on_the_held_book_between_cycles():
     assert second.equity_before == pytest.approx(first.nav + 50.0)
 
 
+def test_a_broker_that_books_real_dividends_gets_no_estimate():
+    from hedge_fund.brokers.alpaca import AlpacaBroker
+    from hedge_fund.brokers.fake_alpaca import FakeAlpaca
+
+    fake = FakeAlpaca(positions={"AAPL": 500}, cash=0.0, prices=CLOSES)
+    broker = AlpacaBroker("k", "s", session=fake, sleep=lambda s: None)
+    fund = Fund(_spec(max_position_pct=1.0),
+                models={"solo": [FakeAnalyst("a", views={"AAPL": 1.0})]})
+    data = FakeDataClient(CLOSES, metrics={"AAPL": _payer(dps_ttm=3.65)})
+    record = run_cycle(fund, "2024-06-13", broker, data, ["AAPL"], prev_as_of="2024-06-03")
+    assert record.dividends == {}
+    assert record.cash_before == 0.0
+
+
 def test_short_owes_the_dividend_and_nonpayers_accrue_nothing():
     spec = _spec(max_position_pct=1.0)
     fund = Fund(spec, models={"solo": [FakeAnalyst("a", views={"AAPL": -1.0, "MSFT": 1.0})]})

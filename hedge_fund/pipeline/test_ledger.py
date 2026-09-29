@@ -106,3 +106,95 @@ def test_only_this_funds_run_receipts_count(tmp_path):
     carry = carried_book(_spec(), "2024-06-03", tmp_path)
     assert carry.as_of is None
     assert carry.cash == 100_000.0
+
+
+# ---------------------------------------------------------------------------
+# Paper: the Alpaca account holds the book
+# ---------------------------------------------------------------------------
+
+from datetime import datetime  # noqa: E402
+from zoneinfo import ZoneInfo  # noqa: E402
+
+from hedge_fund.brokers.alpaca import AlpacaBroker, AlpacaError  # noqa: E402
+from hedge_fund.brokers.fake_alpaca import FakeAlpaca  # noqa: E402
+from hedge_fund.pipeline import ledger  # noqa: E402
+
+TODAY = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
+
+
+def _paper_fund(views=VIEWS):
+    spec = _spec()
+    spec = spec.model_copy(update={
+        "execution": spec.execution.model_copy(update={"broker": "alpaca-paper"})})
+    return Fund(spec, models={"solo": [FakeAnalyst("a", views=views)]})
+
+
+@pytest.fixture
+def account(monkeypatch):
+    fake = FakeAlpaca(date=TODAY, prices={t: p * 1.001 for t, p in CLOSES.items()})
+    monkeypatch.setattr(ledger.AlpacaBroker, "from_env", classmethod(
+        lambda cls: AlpacaBroker("k", "s", session=fake, sleep=lambda s: None)))
+    return fake
+
+
+def test_paper_run_trades_the_account_and_saves_its_book(tmp_path, account):
+    ran = run_carried(_paper_fund(), TODAY, FakeDataClient(CLOSES), UNIVERSE, root=tmp_path)
+    record = ran.record
+
+    assert account.positions and record.positions == account.positions
+    assert record.cash == pytest.approx(account.cash)
+    assert record.peak_nav is None and record.drawdown is None  # no mark to fall from yet
+    assert record.warnings == []
+    assert json.loads(ran.path.read_text())["spec"]["execution"]["broker"] == "alpaca-paper"
+    assert "Alpaca paper account" in ran.carry.describe()
+
+
+def test_paper_run_reads_the_account_and_flags_drift(tmp_path, account):
+    run_carried(_paper_fund(), TODAY, FakeDataClient(CLOSES), UNIVERSE, root=tmp_path)
+    account.positions["AAPL"] -= 7  # someone traded in the dashboard
+    record = run_carried(_paper_fund(), TODAY, FakeDataClient(CLOSES), UNIVERSE,
+                         root=tmp_path).record
+
+    assert record.prev_as_of == TODAY
+    assert len(record.warnings) == 1 and record.warnings[0].startswith("AAPL:")
+
+
+def test_first_paper_run_needs_a_flat_account(tmp_path, account):
+    account.positions["TSLA"] = 5
+    with pytest.raises(LedgerError, match="TSLA"):
+        run_carried(_paper_fund(), TODAY, FakeDataClient(CLOSES), UNIVERSE, root=tmp_path)
+    assert account.submitted == [] and run_receipts("test-fund", tmp_path) == []
+
+
+def test_adopting_an_account_hands_its_positions_to_the_fund(tmp_path, account):
+    account.positions["TSLA"] = 5
+    account.prices["TSLA"] = 250.0
+    record = run_carried(_paper_fund(), TODAY, FakeDataClient({**CLOSES, "TSLA": 250.0}),
+                         UNIVERSE, root=tmp_path, adopt_account=True).record
+    assert record.warnings == ["adopted the account's TSLA position (5 shares) into the fund's book"]
+    assert "TSLA" not in record.positions  # not in the universe: the fund closed it
+
+
+def test_paper_runs_trade_today_only(tmp_path, account):
+    with pytest.raises(LedgerError, match="as of today"):
+        run_carried(_paper_fund(), "2024-06-03", FakeDataClient(CLOSES), UNIVERSE,
+                    root=tmp_path)
+
+
+def test_a_closed_market_stops_the_run_before_any_analyst_is_asked(tmp_path, account):
+    account.is_open = False
+    fund = _paper_fund()
+    with pytest.raises(AlpacaError, match="closed"):
+        run_carried(fund, TODAY, FakeDataClient(CLOSES), UNIVERSE, root=tmp_path)
+    assert fund.strategies[0][1][0].predict_calls == []
+
+
+def test_each_broker_keeps_its_own_chain(tmp_path, account):
+    # A simulated history — even one dated later — neither blocks nor seeds
+    # the paper chain.
+    _receipt(tmp_path, "test-fund", "x", as_of="2099-01-01", equity_before=1.0,
+             nav=1.0, cash=1.0, positions={"AAPL": 99})
+    record = run_carried(_paper_fund(), TODAY, FakeDataClient(CLOSES), UNIVERSE,
+                         root=tmp_path).record
+    assert record.prev_as_of is None and record.warnings == []
+    assert carried_book(_spec(), "2099-01-02", tmp_path).positions == {"AAPL": 99}
