@@ -52,6 +52,7 @@ class CycleRecord(BaseModel):
     equity_before: float
     cash_before: float
     dividends: dict[str, float] = {}    # ticker -> dividend cash accrued since the prior cycle (negative: owed on a short)
+    prev_as_of: str | None = None       # the prior cycle this one carried its book from (None: opened on cash)
     peak_nav: float | None = None       # high-water mark the caller supplied (None: no history)
     drawdown: float | None = None       # equity_before's fall from peak_nav, as a fraction
     orders: list[Order]

@@ -150,6 +150,7 @@ def run_cycle(
         vols=vols,
         skipped=skipped,
         dividends=dividends,
+        prev_as_of=prev_as_of,
         strategies=strategy_records,
         target_weights=netted,
         clamps=risk.clamps,

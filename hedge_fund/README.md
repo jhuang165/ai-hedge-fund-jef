@@ -52,6 +52,8 @@ poetry run aihf       # or, equivalently: python -m hedge_fund.tui
 # With a mandate: run one cycle non-interactively (data → strategies →
 # netting → risk → execution), full CycleRecord as JSON on stdout. A mandate
 # carries no tickers — --tickers says what to point the fund at this run.
+# The book carries: the run opens on the newest saved receipt's positions and
+# cash (the mandate's capital the first time) and saves its own receipt.
 poetry run aihf ~/.hedge-fund/mandates/example.yaml --tickers AAPL,MSFT,NVDA
 
 # Backtest a mandate: the same run_cycle looped over history at the

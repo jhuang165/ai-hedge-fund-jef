@@ -56,8 +56,8 @@ from textual.widgets.option_list import Option
 from textual.widgets.selection_list import Selection
 
 from hedge_fund.backtesting import FundBacktestResult, backtest_fund, rebalance_grid
-from hedge_fund.backtesting.fund import _PERIODS_PER_YEAR
-from hedge_fund.brokers import Fill, SimBroker
+from hedge_fund.backtesting.metrics import PERIODS_PER_YEAR
+from hedge_fund.brokers import Fill
 from hedge_fund.data import CachedDataClient, FDClient
 from hedge_fund.fund import (
     Fund,
@@ -68,8 +68,9 @@ from hedge_fund.fund import (
     normalize_universe,
 )
 from hedge_fund.models import Signal
-from hedge_fund.pipeline import CycleRecord, run_cycle
-from hedge_fund.pipeline.run_cycle import _MARK_LOOKBACK_DAYS
+from hedge_fund.pipeline import CycleRecord
+from hedge_fund.pipeline.ledger import run_carried
+from hedge_fund.features.technicals import MARK_LOOKBACK_DAYS
 from hedge_fund.tui.shared import (
     DEFAULT_CAPITAL,
     DEFAULT_RISK,
@@ -529,8 +530,9 @@ class ConfirmDeleteScreen(ModalScreen[str | None]):
                 f"  ·  {self._backtests} "
                 f"{'backtest' if self._backtests == 1 else 'backtests'}\n",
                 style=CYAN)
-            lines.append("  saved receipts — kept unless you press ctrl+d",
-                         style=MUTED)
+            lines.append("  saved receipts, and the book the fund carries — kept\n"
+                         "  unless you press ctrl+d; a new fund by this name\n"
+                         "  picks the book back up", style=MUTED)
         else:
             lines.append("No saved runs or backtests.", style=MUTED)
         return lines
@@ -1241,23 +1243,13 @@ class RunScreen(Screen):
                 for future in as_completed([pool.submit(warm, n) for n in names]):
                     future.result()
 
-            fund = Fund(spec)
-            broker = SimBroker(
-                cash=spec.capital,
-                commission_bps=spec.execution.commission_bps,
-                slippage_bps=spec.execution.slippage_bps,
-            )
+            # The ledger opens the broker on the fund's last book and saves
+            # this run's receipt — what the next run and the history pane read.
             with FDClient() as raw:
-                record = run_cycle(fund, as_of, broker, CachedDataClient(raw),
-                                   universe)
-
-            # Receipts, same shape as a backtest's: the run is recoverable,
-            # and it's what the fund's history pane reads.
-            FUNDS_DIR.mkdir(exist_ok=True)
-            stamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
-            path = FUNDS_DIR / f"{spec.name}-run-{stamp}.json"
-            path.write_text(record.model_dump_json(indent=2))
-            app.call_from_thread(self._show_report, record, path)
+                ran = run_carried(Fund(spec), as_of, CachedDataClient(raw),
+                                  universe, root=FUNDS_DIR)
+            app.call_from_thread(self._show_report, ran.record, ran.path,
+                                 ran.carry.describe())
         except Exception as exc:  # fail loud, in the UI
             app.call_from_thread(self._fail, exc)
 
@@ -1269,7 +1261,7 @@ class RunScreen(Screen):
             self._painter = None
         self._paint_board()
 
-    def _show_report(self, record: CycleRecord, path: Path) -> None:
+    def _show_report(self, record: CycleRecord, path: Path, carried: str) -> None:
         self._stop_painting()
         self._phase = "done"
         self._record = record
@@ -1281,6 +1273,7 @@ class RunScreen(Screen):
         ))
         self.query_one("#report-foot", Static).update(Group(
             _book_summary(record),
+            Text(carried[0].upper() + carried[1:], style=MUTED),
             Text.assemble(("✓ ", f"bold {GREEN}"), ("Saved run to ", MUTED),
                           (str(path), MUTED)),
             Text.assemble(("▶ ", f"bold {GREEN}"),
@@ -1836,7 +1829,7 @@ class BacktestScreen(Screen):
                 for as_of in dates:
                     lookback = (
                         _date.fromisoformat(as_of)
-                        - timedelta(days=_MARK_LOOKBACK_DAYS)
+                        - timedelta(days=MARK_LOOKBACK_DAYS)
                     ).isoformat()
                     fd.get_prices(ticker, lookback, as_of)
                     if has_agents:
@@ -1961,7 +1954,7 @@ class BacktestScreen(Screen):
         returns = [b / a - 1 for a, b in zip(curve, curve[1:])]
         if len(returns) > 1 and stdev(returns) > 0:
             sharpe = (mean(returns) / stdev(returns)
-                      * sqrt(_PERIODS_PER_YEAR[self._spec.rebalance]))
+                      * sqrt(PERIODS_PER_YEAR[self._spec.rebalance]))
         else:
             sharpe = 0.0
         self._update_stats(nav, fund_return, benchmark_return,

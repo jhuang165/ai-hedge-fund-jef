@@ -12,6 +12,8 @@ Usage::
         With a mandate: run one cycle non-interactively. The full CycleRecord
         prints to stdout as JSON (pipe it anywhere); a short human summary
         goes to stderr. Add --out record.json to also write it to a file.
+        The run opens on the fund's last saved book and saves its receipt
+        to ~/.hedge-fund/mandates/ — see hedge_fund/pipeline/ledger.py.
 
     aihf ~/.hedge-fund/mandates/example.yaml --tickers AAPL,MSFT --backtest
         Backtest the mandate: run_cycle looped over history at the mandate's
@@ -51,11 +53,10 @@ from rich.console import Console
 from rich.table import Table
 
 from hedge_fund.backtesting import backtest_fund
-from hedge_fund.brokers import SimBroker
 from hedge_fund.data import CachedDataClient, FDClient
 from hedge_fund.fund import Fund, load_spec, load_universe, normalize_universe
 from hedge_fund.paths import ENV_PATH, ensure_mandates_dir, ensure_universes_dir
-from hedge_fund.pipeline import run_cycle
+from hedge_fund.pipeline.ledger import LedgerError, run_carried
 from hedge_fund.research.models import ResearchReport
 from hedge_fund.tui.keys import apply_credentials
 from hedge_fund.tui.shared import _BACKTEST_WEEKS
@@ -213,12 +214,6 @@ def main() -> None:
             console.print(f"[bold yellow]  ⚠ {warning}[/]")
         return
 
-    broker = SimBroker(
-        cash=spec.capital,
-        commission_bps=spec.execution.commission_bps,
-        slippage_bps=spec.execution.slippage_bps,
-    )
-
     with FDClient() as raw:
         fd = CachedDataClient(raw)
         n_models = sum(len(staff) for _, staff in fund.strategies)
@@ -228,7 +223,11 @@ def main() -> None:
             f"across {len(fund.strategies)} strategies…",
             spinner="dots",
         ):
-            record = run_cycle(fund, args.date, broker, fd, universe)
+            try:
+                ran = run_carried(fund, args.date, fd, universe)
+            except LedgerError as exc:
+                parser.error(str(exc))
+    record = ran.record
 
     print(record.model_dump_json(indent=2))
     if args.out:
@@ -249,6 +248,7 @@ def main() -> None:
     )
     if record.skipped:
         console.print(f"[dim]skipped: {', '.join(s.ticker for s in record.skipped)}[/]")
+    console.print(f"[dim]{ran.carry.describe()}  ·  saved to {ran.path}[/]")
 
 
 def _research_main(argv: list[str]) -> None:

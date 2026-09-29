@@ -40,12 +40,11 @@ from pydantic import BaseModel, Field
 
 from hedge_fund import paths
 from hedge_fund.backtesting import backtest_fund
-from hedge_fund.brokers import SimBroker
 from hedge_fund.data import CachedDataClient, FDClient
 from hedge_fund.fund import Fund, FundSpec, load_spec, load_strategy, normalize_universe
 from hedge_fund.llm import DEFAULT_MODEL, is_supported, load_api_models, make_llm
 from hedge_fund.llm.registry import PROVIDER_ENV_VARS
-from hedge_fund.pipeline import run_cycle
+from hedge_fund.pipeline.ledger import LedgerError, carried_book, run_carried
 from hedge_fund.research import (
     TavilyClient,
     diagnose,
@@ -338,6 +337,10 @@ def create_app() -> FastAPI:
     def cycle(body: CycleRequest) -> dict[str, Any]:
         spec, universe = _fund_inputs(body)
         _require_keys("FINANCIAL_DATASETS_API_KEY")
+        try:  # refuse up front, not as a failed job, a run that breaks the chain
+            carried_book(spec, body.as_of)
+        except LedgerError as exc:
+            raise HTTPException(409, str(exc))
         job = Job("cycle", body.model_dump(), f"{spec.name} @ {body.as_of}")
 
         def run(job: Job, progress) -> dict[str, Any]:
@@ -345,15 +348,11 @@ def create_app() -> FastAPI:
                 fund = Fund(spec)
                 progress({"label": f"{len(universe)} tickers x "
                           f"{sum(len(s) for _, s in fund.strategies)} models"})
-                broker = SimBroker(
-                    cash=spec.capital,
-                    commission_bps=spec.execution.commission_bps,
-                    slippage_bps=spec.execution.slippage_bps,
-                )
                 with FDClient() as raw:
-                    record = run_cycle(fund, body.as_of, broker,
-                                       CachedDataClient(raw), universe)
-                return record.model_dump()
+                    ran = run_carried(fund, body.as_of, CachedDataClient(raw),
+                                      universe)
+                return {**ran.record.model_dump(),
+                        "carried": ran.carry.describe(), "receipt": str(ran.path)}
 
         return jobs.submit(job, run).summary()
 

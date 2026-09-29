@@ -94,3 +94,11 @@ def test_round_trip_loses_exactly_the_costs():
 def test_negative_costs_rejected():
     with pytest.raises(ValueError):
         SimBroker(cash=1.0, slippage_bps=-1.0)
+
+
+def test_opens_on_a_carried_book():
+    broker = SimBroker(cash=500.0, positions={"AAPL": 10, "MSFT": -3, "NVDA": 0})
+    assert {t: p.shares for t, p in broker.positions().items()} == {"AAPL": 10, "MSFT": -3}
+    broker.place_order(Order(ticker="AAPL", side="sell", quantity=10, price=100.0))
+    assert "AAPL" not in broker.positions()
+    assert broker.cash() == pytest.approx(1_500.0)

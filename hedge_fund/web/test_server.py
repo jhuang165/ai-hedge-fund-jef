@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import json
 import time
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
 
 from hedge_fund import paths
 from hedge_fund.models import Signal
+from hedge_fund.pipeline.ledger import Carry
 from hedge_fund.research.models import ResearchReport, SearchResult
 from hedge_fund.web import server
 
@@ -78,8 +80,10 @@ def client(tmp_path, monkeypatch):
         return _report(ticker, signal, conf, action, mark)
 
     monkeypatch.setattr(server, "diagnose", fake_diagnose)
-    monkeypatch.setattr(server, "run_cycle", lambda fund, as_of, broker, fd, universe: _Dump(
-        fund=fund.spec.name, as_of=as_of, universe=universe, nav=100_000.0, model=server.os.environ.get("HEDGE_FUND_LLM_MODEL")))
+    monkeypatch.setattr(server, "run_carried", lambda fund, as_of, fd, universe: SimpleNamespace(
+        record=_Dump(fund=fund.spec.name, as_of=as_of, universe=universe, nav=100_000.0,
+                     model=server.os.environ.get("HEDGE_FUND_LLM_MODEL")),
+        carry=Carry(cash=fund.spec.capital), path=tmp_path / "receipt.json"))
 
     def fake_backtest(fund, start, end, fd, universe, *, on_cycle=None):
         for i, (d, nav) in enumerate([("2025-01-03", 101_000.0), ("2025-01-10", 99_000.0)]):
@@ -216,6 +220,18 @@ def test_cycle_job_routes_model_and_restores_env(client):
     assert done["result"]["universe"] == ["AAPL", "MSFT"]
     assert done["result"]["model"] == "claude-opus-5"   # routed through the env seam...
     assert "HEDGE_FUND_LLM_MODEL" not in server.os.environ  # ...and restored after
+    assert done["result"]["carried"].startswith("opened on")
+
+
+def test_cycle_refuses_to_run_before_the_books_last_date(client, tmp_path):
+    mandates = tmp_path / "mandates"
+    (mandates / "example-fund-run-2025-07-01-000000-000000.json").write_text(json.dumps(
+        {"fund": "example-fund", "as_of": "2025-07-01", "positions": {}, "cash": 1.0,
+         "nav": 1.0, "equity_before": 1.0}))
+    r = client.post("/api/cycle", json={"mandate": "example.yaml", "tickers": ["AAPL"],
+                                        "as_of": "2025-06-30"})
+    assert r.status_code == 409
+    assert "2025-07-01" in r.json()["detail"]
 
 
 def test_backtest_job_streams_nav(client):

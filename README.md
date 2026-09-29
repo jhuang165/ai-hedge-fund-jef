@@ -80,6 +80,8 @@ aihf ~/.hedge-fund/mandates/example.yaml --tickers AAPL,MSFT --backtest
 
 A mandate is the desk — strategies, staff, risk, capital, cadence — and never names tickers; `--tickers` says what to point it at for this run.
 
+A fund keeps its book between runs. Every run saves a receipt in `~/.hedge-fund/mandates/`, and the next run opens on the newest one: its positions, its cash, and its high-water mark for the drawdown kill-switch. So NAV builds into a track record instead of resetting to the mandate's capital. The first run opens on the capital. A run can repeat the last run's date or move forward, but never go back; history is what `--backtest` is for, and a backtest always starts fresh.
+
 A backtest is charged for trading. The mandate's `execution` block sets the simulated broker's commission and slippage (five basis points of slippage per side by default) and a no-trade band that skips rebalances too small to be worth their costs (half a percent of equity by default; exits always trade in full). The costs paid show up on every cycle record and in the backtest metrics, so the equity curve is net of friction.
 
 A backtest over tickers you type in today is survivorship-biased: every name on the list is one you already know made it. The result carries a warning saying so, on the receipt and on every screen. To remove the bias, backtest over a dated universe file instead, which lists which names were investable and since when, so names join and leave the book as they did in history. An example lives at `~/.hedge-fund/universes/example.yaml`:

@@ -35,11 +35,16 @@ class SimBroker:
         *,
         commission_bps: float = 0.0,
         slippage_bps: float = 0.0,
+        positions: dict[str, int] | None = None,
     ) -> None:
         if commission_bps < 0 or slippage_bps < 0:
             raise ValueError("commission_bps and slippage_bps must be >= 0")
         self._cash = cash
-        self._shares: dict[str, int] = {}
+        # A broker can open on a carried book — the ledger's last positions —
+        # not only on cash.
+        self._shares: dict[str, int] = {
+            t: s for t, s in (positions or {}).items() if s != 0
+        }
         self._commission = commission_bps * _BPS
         self._slippage = slippage_bps * _BPS
 

@@ -10,12 +10,11 @@ read [VISION.md](./VISION.md).
 
 ✅ Shipped · 🚧 In progress · ⬜ Planned
 
-**Current focus:** the persistent ledger. Every run already writes a full receipt
-(positions, cash, NAV, every thesis) — the missing half is *reading* it: seed each
-run's broker from the newest receipt so the fund carries its book between runs and
-NAV becomes a track record instead of resetting to the mandate's capital. Then the
-paper broker, then the scheduler — that's the path from "run it by hand" to a fund
-that is genuinely always-on. In parallel: retiring the v1 CLI, which needs Ollama
+**Current focus:** the paper broker. The ledger now carries the book: every run
+opens on the newest receipt's positions and cash and saves its own, so NAV is a
+track record rather than a reset to the mandate's capital. Next the paper broker,
+then the scheduler — that's the path from "run it by hand" to a fund that is
+genuinely always-on. In parallel: retiring the v1 CLI, which needs Ollama
 (the free, local, no-key path) and the remaining investor personas ported.
 
 The tables below are a capability map, not a strict order; where items depend on
@@ -31,9 +30,9 @@ it in backtest, paper, or live mode (see [VISION.md](./VISION.md)).
 | `AlphaModel` / `Signal` interface — the contract every analyst implements | ✅ |
 | Backtesting engine — `backtest_fund`: the whole fund over history on `run_cycle`, equity curve vs the mandate's benchmark (plus the per-model harness) | ✅ |
 | Event-study engine — market-model abnormal returns (CARs) | ✅ |
-| `run_cycle` — one pipeline (data → analysts → portfolio → risk → execution → ledger), three modes | 🚧 (single cycle, run-today, and the backtest loop ship; a carried book + paper broker are what remain) |
-| Fund object — persistent mandate, staff, capital, books | 🚧 (mandates, staffing, and per-run receipts ship; tickers are a run-time input, not part of the mandate; the carried book is next) |
-| Persistent ledger — positions, every decision + thesis, orders, fills, NAV history | 🚧 (write half ships: every run and backtest saves a full `CycleRecord` receipt, and the TUI shows the history; read half next: seed the broker from the newest receipt so NAV moves between runs) |
+| `run_cycle` — one pipeline (data → analysts → portfolio → risk → execution → ledger), three modes | 🚧 (single cycle, run-today on a carried book, and the backtest loop ship; the paper broker is what remains) |
+| Fund object — persistent mandate, staff, capital, books | ✅ (mandates, staffing, per-run receipts, and a book carried between runs; tickers are a run-time input, not part of the mandate) |
+| Persistent ledger — positions, every decision + thesis, orders, fills, NAV history | ✅ (every run saves a full `CycleRecord` receipt and the next opens on it — positions, cash, the high-water mark for the kill-switch, and the prior date dividends accrue from; runs move forward only; CLI, TUI, and web runner all go through `pipeline/ledger.py`) |
 | LLM provider layer — one client factory (`make_llm`) routed by the model registry: Anthropic · OpenAI · DeepSeek · Google · xAI · Kimi | ✅ (Ollama next — the free local path, and the last blocker v1 holds over v2) |
 | Point-in-time data correctness — as-of / filing-date queries, no lookahead | 🚧 (filing-date queries and dated universes ship; filed multiples are re-struck at the as-of price; dividends accrue from the filed payout since the price feed is unadjusted; a hand-picked universe is flagged as survivorship-biased on every backtest; delisting handling is next) |
 | Validation gate — CPCV, probability of backtest overfitting (PBO) | 🚧 (`aihf validate` ships a hold-out split and a parameter sweep over any mandate field; CPCV and PBO next) |
@@ -109,7 +108,7 @@ Thin clients over the engine — pick the surface, the core stays the same.
 |------|--------|
 | TUI — the main interface (Textual): build a fund, run it as of today, backtest it, browse every signal's thesis, fund history + delete, model picker, in-app API-key setup | 🚧 (ships and is the default `python -m v2.run`; streaming reasoning + watch mode remain) |
 | CLI — thin machine client over the engine: `python -m v2.run mandate.yaml --tickers … [--backtest]`, JSON on stdout | ✅ |
-| Web dashboard — replayable, time-scrubbable reasoning ledger | 🚧 (`aihf web` ships on the v2 engine: research desk with ranked, position-aware reports; fund runner with live backtest curve and per-cycle theses; mandate builder; saved reports. Time-scrubbing the ledger waits on the carried book) |
+| Web dashboard — replayable, time-scrubbable reasoning ledger | 🚧 (`aihf web` ships on the v2 engine: research desk with ranked, position-aware reports; fund runner with live backtest curve and per-cycle theses; mandate builder; saved reports. Time-scrubbing the ledger is next, now that runs chain) |
 | Conversational control plane — operate the fund in natural language | ⬜ |
 
 ## Data
