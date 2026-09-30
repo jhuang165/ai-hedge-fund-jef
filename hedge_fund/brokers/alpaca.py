@@ -87,6 +87,20 @@ class AlpacaBroker:
     # Readiness — checked before a cycle spends anything on analysts
     # ------------------------------------------------------------------
 
+    def status(self) -> dict:
+        """A read-only look at the account — safe any time, market open or
+        not: whether it can trade, its cash, its book, and the clock."""
+        account = self._request("GET", "/v2/account")
+        clock = self._request("GET", "/v2/clock")
+        return {
+            "status": account.get("status"),
+            "trading_blocked": bool(account.get("trading_blocked")),
+            "cash": float(account["cash"]),
+            "positions": {t: p.shares for t, p in self.positions().items()},
+            "market_open": bool(clock.get("is_open")),
+            "next_open": clock.get("next_open"),
+        }
+
     def market_date(self) -> str:
         """Today's date on the exchange's clock (YYYY-MM-DD). Raises unless
         the account can trade and the market is open right now: a market

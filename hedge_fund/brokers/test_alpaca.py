@@ -84,3 +84,12 @@ def test_credit_is_a_no_op_since_real_dividends_land_on_their_own():
     broker.credit(50.0, "dividend accrual")
     assert broker.cash() == 1_000.0
     assert AlpacaBroker.books_dividends is True
+
+
+def test_status_reads_the_account_without_needing_an_open_market():
+    fake = FakeAlpaca(cash=7_000.0, positions={"MSFT": -3}, is_open=False)
+    assert _broker(fake).status() == {
+        "status": "ACTIVE", "trading_blocked": False, "cash": 7_000.0,
+        "positions": {"MSFT": -3}, "market_open": False,
+        "next_open": "2026-09-29T09:30:00-04:00"}
+    assert fake.submitted == []
