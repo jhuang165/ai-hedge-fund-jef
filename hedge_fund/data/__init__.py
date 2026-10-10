@@ -14,8 +14,16 @@ from hedge_fund.data.models import (
     Price,
 )
 from hedge_fund.data.protocol import DataClient
+from hedge_fund.data.source import cache_dir_for, data_source, open_cached_client, open_data_client
+from hedge_fund.data.yfinance_client import YFinanceClient, YFinanceClientError
 
 __all__ = [
+    "YFinanceClient",
+    "YFinanceClientError",
+    "cache_dir_for",
+    "data_source",
+    "open_cached_client",
+    "open_data_client",
     "CachedDataClient",
     "CompanyFacts",
     "CompanyNews",

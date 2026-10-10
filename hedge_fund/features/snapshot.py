@@ -186,7 +186,8 @@ def build_snapshot(
         roe_avg=_avg([m.return_on_equity for m in metrics]),
         net_margin_avg=_avg([m.net_margin for m in metrics]),
         gross_margin_trend=_trend([m.gross_margin for m in metrics]),
-        bvps_cagr=_cagr([m.book_value_per_share for m in metrics]),
+        bvps_cagr=_cagr([m.book_value_per_share for m in metrics],
+                        [m.report_period for m in metrics]),
         debt_to_equity_latest=latest.debt_to_equity,
         market_cap_latest=latest.market_cap,
         price=price,
@@ -221,12 +222,23 @@ def _trend(values: list[float | None]) -> float | None:
     return round(xs[0] - xs[-1], 4) if len(xs) >= 2 else None
 
 
-def _cagr(values: list[float | None]) -> float | None:
-    """Annualized growth from oldest to latest (ttm rows are quarter-spaced)."""
-    xs = [v for v in values if v is not None]
-    if len(xs) < 2 or xs[-1] is None or xs[-1] <= 0 or xs[0] <= 0:
+def _cagr(values: list[float | None], periods: list[str] | None = None) -> float | None:
+    """Annualized growth from oldest to latest. The span comes from the
+    rows' report periods when given (rows need not be evenly spaced: a
+    keyless feed mixes quarter ends and fiscal year ends); otherwise ttm
+    rows are assumed quarter-spaced."""
+    pairs = [(v, p) for v, p in zip(values, periods or [None] * len(values)) if v is not None]
+    if len(pairs) < 2:
         return None
-    years = (len(xs) - 1) / 4  # quarter-spaced ttm periods
+    (latest, p_latest), (oldest, p_oldest) = pairs[0], pairs[-1]
+    if latest <= 0 or oldest <= 0:
+        return None
+    if p_latest and p_oldest:
+        from datetime import date as _date
+
+        years = (_date.fromisoformat(p_latest[:10]) - _date.fromisoformat(p_oldest[:10])).days / 365.25
+    else:
+        years = (len(pairs) - 1) / 4  # quarter-spaced ttm periods
     if years <= 0:
         return None
-    return round((xs[0] / xs[-1]) ** (1 / years) - 1, 4)
+    return round((latest / oldest) ** (1 / years) - 1, 4)

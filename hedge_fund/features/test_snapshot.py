@@ -1,6 +1,7 @@
 """FundamentalsSnapshot tests — mocked data client, no network."""
 
 import pytest
+from datetime import date
 
 from hedge_fund.data.models import CompanyFacts, FinancialMetrics
 from hedge_fund.features.snapshot import InsufficientData, build_snapshot
@@ -73,8 +74,10 @@ def test_aggregates():
     metrics = _history(4)
     # oldest gross margin 0.30, newest 0.40 -> trend +0.10
     metrics[-1] = _metric("2024-03-31", gross_margin=0.30)
-    # BVPS oldest 8.0 -> newest 10.0 over 3 quarters (0.75y)
+    # BVPS oldest 8.0 -> newest 10.0 over the span of the report periods
     metrics[-1].book_value_per_share = 8.0
+    span_years = (date.fromisoformat(metrics[0].report_period)
+                  - date.fromisoformat(metrics[-1].report_period)).days / 365.25
     client = MockDataClient(metrics=metrics)
 
     snap = build_snapshot("TEST", "2025-01-15", client)
@@ -83,7 +86,7 @@ def test_aggregates():
     assert snap.gross_margin_trend == pytest.approx(0.10)
     assert snap.debt_to_equity_latest == pytest.approx(0.5)
     assert snap.market_cap_latest == pytest.approx(1e9)
-    assert snap.bvps_cagr == pytest.approx((10.0 / 8.0) ** (1 / 0.75) - 1, abs=1e-4)
+    assert snap.bvps_cagr == pytest.approx((10.0 / 8.0) ** (1 / span_years) - 1, abs=1e-4)
 
 
 def test_market_cap_comes_from_pit_metrics_not_facts():
