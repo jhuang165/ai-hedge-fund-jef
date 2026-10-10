@@ -36,11 +36,11 @@ aihf
 
 ### API keys
 
-The app asks for keys the first time it needs them and saves them to `~/.hedge-fund/.env` — nothing to configure up front. It needs:
+The app asks for keys the first time it needs them and saves them to `~/.hedge-fund/.env` — nothing to configure up front. It can use:
 
-- A [Financial Datasets](https://financialdatasets.ai) API key, for prices, fundamentals, and earnings.
+- A [Financial Datasets](https://financialdatasets.ai) API key, for point-in-time prices, fundamentals, and earnings. Optional: without it the fund reads Yahoo Finance (no key), which is fine for research as of today but only approximates filing dates, so backtests you intend to believe should use the keyed feed. `HEDGE_FUND_DATA_SOURCE=fd|yfinance` forces one or the other.
 - One LLM API key for the LLM-powered alpha models. Supported providers: Anthropic, OpenAI, DeepSeek, Google, xAI, Kimi.
-- Optionally, a [Tavily](https://tavily.com) API key (`TAVILY_API_KEY`) — only needed for `aihf research`, the web-search command below.
+- Optionally, a [Tavily](https://tavily.com) API key (`TAVILY_API_KEY`) — only needed for `aihf research` when it searches and reasons by itself; see "Research from Claude Code" below for a path that needs no key at all.
 
 Keys exported in your shell always win over the saved file.
 
@@ -63,6 +63,17 @@ aihf web
 ```
 
 This starts a local server at `http://127.0.0.1:8787` and opens it. The **Research** page ranks any list of names (with positions, as above) and shows each full report: the action and its rationale, the thesis, the cited catalysts and risks, the desk readout of every quant model, and the price-action snapshot. The **Fund** page runs a saved mandate for one cycle or backtests it with a live equity curve against the benchmark, and can compose a new mandate from the strategy library. Every research run is saved under `~/.hedge-fund/research/` and browsable on the **Reports** page; **Settings** shows which API keys are set and lets you save them. It binds to localhost only and has no authentication.
+
+### Hourly reporter
+
+A second web app that runs itself: every hour it writes a short, cited brief on each name in a watchlist, from the live quote, the last two days of headlines, the quant desk's readings, and a model that searches the web for what happened since the last brief. It is built to live on a small server and be read from anywhere:
+
+```bash
+aihf reporter                      # http://0.0.0.0:8788, scheduler on
+aihf reporter --once --tickers NVDA  # one cycle, then exit
+```
+
+The model is reached through any OpenAI-compatible endpoint; the intended one is [circlemouth/Codex-Wrapper](https://github.com/circlemouth/Codex-Wrapper) in front of the Codex CLI signed in with a ChatGPT account, with Codex's own live web search on, so no API key is involved. Briefs are kept in SQLite with their evidence; the page shows a card per name (price, signal, confidence, action, headline, what changed since last time) and the full brief with its sources, catalysts, risks, what to watch next, and history. Symbols are added and removed on the page. Configuration is by environment variable (`hedge_fund/reporter/config.py`); the two-container stack and free hosting options are in [`deploy/`](deploy/README.md). The dashboard can also be mirrored to a static host after every cycle (`REPORTER_PUBLISH_DIR`, `aihf reporter --publish`): a read-only copy of the page and its data as files, which is how it runs on Firebase Hosting at a fixed free URL.
 
 ### Non-interactive
 
@@ -125,7 +136,23 @@ Several names come back ranked, best-liked first, in one table. Combine direct t
 aihf research NVDA MSFT:20@400 --portfolio ~/holdings.yaml
 ```
 
-This is read-only and stands apart from the fund: it touches no mandate, trades nothing, and writes nothing to the ledger. Every run is saved under `~/.hedge-fund/research/`. It needs `TAVILY_API_KEY` in addition to your usual keys. Every catalyst and risk cites the sources it rests on, so you can check the claim against the page it came from, and the desk readout shows each model's arithmetic so you can check the numbers too.
+This is read-only and stands apart from the fund: it touches no mandate, trades nothing, and writes nothing to the ledger. Every run is saved under `~/.hedge-fund/research/`. Run this way it needs `TAVILY_API_KEY` and an LLM key in addition to a data source. Every catalyst and risk cites the sources it rests on, so you can check the claim against the page it came from, and the desk readout shows each model's arithmetic so you can check the numbers too.
+
+### Research from Claude Code
+
+The research pipeline is split at the LLM, so an agent that is already running inside the checkout can be the analyst instead of an API call. `--dossier` gathers the evidence and stops, needing no search or LLM key; `--ingest` takes the finished diagnosis back, validates it exactly as an LLM's answer would be, saves it, and prints the report:
+
+```bash
+aihf research AAPL:100@150.25 --dossier --out dossier.json
+```
+
+The dossier carries the fundamentals snapshot, the price-action snapshot, the desk readout, the marked position, the four search queries the desk would run, and the exact prompt it would send. The reasoner searches, writes the answer JSON the prompt asks for (plus its `sources` and the untouched `dossier`), and hands it back:
+
+```bash
+aihf research --ingest answer.json
+```
+
+An answer that leaves `action` out gets one from the project's standing policy (`derive_action` in `hedge_fund/research/dossier.py`): a confident bullish call on a name not held is "buy", a weak one "watch", bearish "avoid"; on a held name, a confident call with the position is "add", against it "exit", weak ones "hold" and "trim". The trade action is then the fund's rule, not the reasoner's opinion. In this checkout `/research AAPL` in Claude Code runs this whole loop with the session as the analyst (see `.claude/skills/research/`), and `/scorecard` grades the calls later like any other.
 
 ### Grade the research desk
 

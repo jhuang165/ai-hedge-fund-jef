@@ -1,0 +1,4 @@
+# Your ChatGPT sign-in and everything Codex writes next to it. Only config.toml is tracked.
+*
+!.gitignore
+!config.toml

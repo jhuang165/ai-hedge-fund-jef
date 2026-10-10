@@ -62,3 +62,8 @@ outputs/
 # Local-only release tooling
 scripts/release.sh
 .claude/
+
+# Static export of the reporter dashboard (rebuilt after every cycle, see deploy/firebase/)
+deploy/firebase/site/
+deploy/firebase/site.tmp/
+deploy/firebase/.firebase/

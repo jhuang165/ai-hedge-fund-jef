@@ -1,0 +1,86 @@
+# The hourly reporter, as two containers on one small box.
+#
+#   codex-wrapper  circlemouth/Codex-Wrapper: an OpenAI-compatible HTTP API in
+#                  front of the Codex CLI, signed in with your ChatGPT account
+#                  (./codex-home/auth.json) and configured by ./codex-home/config.toml
+#                  (model gpt-6-luna, live web search). Reachable from the
+#                  reporter container and, on 127.0.0.1:${CODEX_WRAPPER_PORT:-8020},
+#                  from a reporter running on the host (deploy/mac-publish.sh).
+#   reporter       this repo's `aihf reporter`: gathers evidence, asks the wrapper
+#                  for a brief per watched name every hour, stores briefs in
+#                  SQLite on the `reporter-data` volume, serves the dashboard.
+#
+#   cp .env.example .env && edit it        # passwords, cadence
+#   cp ~/.codex/auth.json codex-home/      # from a machine where `codex login` ran
+#   docker compose up -d --build
+#   open http://<host>:8788                # user "desk", REPORTER_PASSWORD
+
+services:
+  codex-wrapper:
+    build:
+      # Pinned to the commit this stack was tested against (2025-12-12 "fixBug").
+      context: https://github.com/circlemouth/Codex-Wrapper.git#e9353b8d29db0c00057f6c4f88e9d06fb27c61a6
+      args:
+        CODEX_UID: ${HOST_UID:-1000}
+        CODEX_GID: ${HOST_GID:-1000}
+    image: codex-wrapper:local
+    restart: unless-stopped
+    environment:
+      CODEX_HOME: /home/codex/.codex
+      CODEX_WORKDIR: /workspace
+      CODEX_PATH: codex
+      PROXY_API_KEY: ${PROXY_API_KEY:?set PROXY_API_KEY in .env}
+      RATE_LIMIT_PER_MINUTE: "0"
+      CODEX_SANDBOX_MODE: read-only
+      CODEX_REASONING_EFFORT: ${CODEX_REASONING_EFFORT:-medium}
+      CODEX_HIDE_REASONING: "true"
+      CODEX_TIMEOUT: ${CODEX_TIMEOUT:-900}
+      CODEX_MAX_PARALLEL_REQUESTS: ${REPORTER_PARALLEL:-2}
+      CODEX_LOCAL_ONLY: "0"
+    volumes:
+      # auth.json (your sign-in; Codex refreshes it in place) and config.toml
+      - ./codex-home:/home/codex/.codex
+      - codex-workspace:/workspace
+    ports:
+      - "127.0.0.1:${CODEX_WRAPPER_PORT:-8020}:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS -H \"Authorization: Bearer $$PROXY_API_KEY\" http://127.0.0.1:8000/v1/models >/dev/null || exit 1"]
+      interval: 60s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  reporter:
+    build:
+      context: ..
+      dockerfile: deploy/reporter.Dockerfile
+    image: aihf-reporter:local
+    restart: unless-stopped
+    depends_on:
+      codex-wrapper:
+        condition: service_healthy
+    environment:
+      CODEX_WRAPPER_URL: http://codex-wrapper:8000/v1
+      CODEX_WRAPPER_API_KEY: ${PROXY_API_KEY}
+      REPORTER_MODEL: ${REPORTER_MODEL:-gpt-6-luna}
+      REPORTER_REASONING: ${REPORTER_REASONING:-}
+      REPORTER_USER: ${REPORTER_USER:-desk}
+      REPORTER_PASSWORD: ${REPORTER_PASSWORD:?set REPORTER_PASSWORD in .env}
+      REPORTER_SYMBOLS: ${REPORTER_SYMBOLS:-SMCI,NVDA,QCOM,GOOG,AAPL,AMZN,MSFT,META,WFC,MU}
+      REPORTER_INTERVAL_MINUTES: ${REPORTER_INTERVAL_MINUTES:-60}
+      REPORTER_OFF_HOURS_INTERVAL_MINUTES: ${REPORTER_OFF_HOURS_INTERVAL_MINUTES:-240}
+      REPORTER_ACTIVE_HOURS: ${REPORTER_ACTIVE_HOURS:-07:00-20:00}
+      REPORTER_TIMEZONE: ${REPORTER_TIMEZONE:-America/New_York}
+      REPORTER_PARALLEL: ${REPORTER_PARALLEL:-2}
+      REPORTER_LLM_TIMEOUT: ${CODEX_TIMEOUT:-900}
+      REPORTER_DB: /data/reporter.db
+      HEDGE_FUND_DATA_SOURCE: yfinance
+      HOME: /data
+    volumes:
+      - reporter-data:/data
+    ports:
+      - "${REPORTER_PORT:-8788}:8788"
+
+volumes:
+  codex-workspace:
+  reporter-data:
