@@ -98,6 +98,13 @@ class ExecutionPolicy(BaseModel):
         "the decision close — the gap between the print you saw and the one "
         "you get",
     )
+    broker: Literal["sim", "alpaca-paper"] = Field(
+        default="sim",
+        description="where a run's orders go. sim: the simulated broker on the "
+        "fund's carried book. alpaca-paper: an Alpaca paper account (keys in "
+        "APCA_API_KEY_ID / APCA_API_SECRET_KEY), which fills at real quotes and "
+        "holds the book itself. Backtests always simulate",
+    )
 
 
 class DividendPolicy(BaseModel):

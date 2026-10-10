@@ -58,7 +58,8 @@ from textual.widgets.selection_list import Selection
 from hedge_fund.backtesting import FundBacktestResult, backtest_fund, rebalance_grid
 from hedge_fund.backtesting.metrics import PERIODS_PER_YEAR
 from hedge_fund.brokers import Fill
-from hedge_fund.data import CachedDataClient, FDClient
+from hedge_fund.brokers.alpaca import KEY_ID_VAR, SECRET_VAR
+from hedge_fund.data import open_cached_client
 from hedge_fund.fund import (
     Fund,
     FundSpec,
@@ -264,19 +265,24 @@ class KeyPromptScreen(ModalScreen[bool]):
         self.dismiss(False)
 
 
-def _demand_run_keys(app, resume) -> bool:
-    """True if every key a run needs is in the environment: the data key
-    first, then the selected model's LLM key. Otherwise open the prompt for
+def _demand_run_keys(app, resume, spec: FundSpec | None = None) -> bool:
+    """True if every key a run needs is in the environment: for a run of a
+    fund on the Alpaca paper broker, given as *spec*, the Alpaca pair, then
+    the selected model's LLM key. Otherwise
+    open the prompt for
     the first missing one; each save calls ``resume``, which should re-enter
     this gate so the next missing key is asked for in turn. Ask here, not
     deep inside a worker thread: a run that dies on a missing credential has
     already spent minutes of warming."""
-    if not os.environ.get("FINANCIAL_DATASETS_API_KEY"):
-        app.push_screen(
-            KeyPromptScreen("Financial Datasets",
-                            "FINANCIAL_DATASETS_API_KEY"),
-            lambda saved: resume() if saved else None)
-        return False
+    # No data key is demanded: without FINANCIAL_DATASETS_API_KEY the fund
+    # reads Yahoo Finance (see hedge_fund/data/source.py).
+    if spec is not None and spec.execution.broker == "alpaca-paper":
+        for label, env_var in (("Alpaca paper (key ID)", KEY_ID_VAR),
+                               ("Alpaca paper (secret)", SECRET_VAR)):
+            if not os.environ.get(env_var):
+                app.push_screen(KeyPromptScreen(label, env_var),
+                                lambda saved: resume() if saved else None)
+                return False
     provider = provider_for(os.environ.get("HEDGE_FUND_LLM_MODEL", ""))
     env_var = missing_key(provider) if provider else None
     if env_var is None:
@@ -1173,7 +1179,7 @@ class RunScreen(Screen):
             self.notify("Enter at least one ticker.", severity="error")
             return
         def resume() -> None:
-            if _demand_run_keys(self.app, resume):
+            if _demand_run_keys(self.app, resume, self._spec):
                 self._begin()
         resume()
 
@@ -1228,8 +1234,7 @@ class RunScreen(Screen):
                 # no client and simply runs.
                 model = (cls(llm=make_llm(on_token=desk.feed))
                          if issubclass(cls, LLMAgent) else cls())
-                with FDClient() as raw:
-                    fd = CachedDataClient(raw)
+                with open_cached_client() as fd:
                     for ticker in universe:
                         desk.begin(ticker)
                         try:
@@ -1245,8 +1250,8 @@ class RunScreen(Screen):
 
             # The ledger opens the broker on the fund's last book and saves
             # this run's receipt — what the next run and the history pane read.
-            with FDClient() as raw:
-                ran = run_carried(Fund(spec), as_of, CachedDataClient(raw),
+            with open_cached_client() as fd:
+                ran = run_carried(Fund(spec), as_of, fd,
                                   universe, root=FUNDS_DIR)
             app.call_from_thread(self._show_report, ran.record, ran.path,
                                  ran.carry.describe())
@@ -1274,6 +1279,7 @@ class RunScreen(Screen):
         self.query_one("#report-foot", Static).update(Group(
             _book_summary(record),
             Text(carried[0].upper() + carried[1:], style=MUTED),
+            *(Text(f"⚠ {w}", style="bold yellow") for w in record.warnings),
             Text.assemble(("✓ ", f"bold {GREEN}"), ("Saved run to ", MUTED),
                           (str(path), MUTED)),
             Text.assemble(("▶ ", f"bold {GREEN}"),
@@ -1767,8 +1773,8 @@ class BacktestScreen(Screen):
              universe: list[str]) -> None:
         app = self.app
         try:
-            with FDClient() as raw:
-                bars = CachedDataClient(raw).get_prices(spec.benchmark, start, end)
+            with open_cached_client() as fd:
+                bars = fd.get_prices(spec.benchmark, start, end)
             closes = {b.time[:10]: b.close for b in bars
                       if start <= b.time[:10] <= end}
             if not closes:
@@ -1793,8 +1799,8 @@ class BacktestScreen(Screen):
                 if dwell > 0:
                     time.sleep(dwell)
 
-            with FDClient() as raw:
-                result = backtest_fund(fund, start, end, CachedDataClient(raw),
+            with open_cached_client() as fd:
+                result = backtest_fund(fund, start, end, fd,
                                        universe, on_cycle=tick)
 
             FUNDS_DIR.mkdir(exist_ok=True)
@@ -1822,8 +1828,7 @@ class BacktestScreen(Screen):
         bar = self.query_one("#warm-progress", ProgressBar)
 
         def prefetch(ticker: str, dates: list[str]) -> None:
-            with FDClient() as raw:  # own client per task (requests isn't shared-safe)
-                fd = CachedDataClient(raw)
+            with open_cached_client() as fd:  # own client per task (requests isn't shared-safe)
                 if has_agents:
                     fd.get_company_facts(ticker)
                 for as_of in dates:
@@ -1852,8 +1857,7 @@ class BacktestScreen(Screen):
         def warm(agent_name: str) -> None:
             who = display[agent_name]
             model = ALPHA_MODEL_REGISTRY[agent_name]()  # own instance per thread
-            with FDClient() as raw:
-                fd = CachedDataClient(raw)
+            with open_cached_client() as fd:
                 for as_of in grid:
                     for ticker in universe:
                         app.call_from_thread(

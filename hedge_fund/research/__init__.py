@@ -5,6 +5,14 @@ mandate/strategy/backtest pipeline. See hedge_fund/research/diagnose.py.
 from __future__ import annotations
 
 from hedge_fund.research.diagnose import DEFAULT_QUERIES, default_desk, diagnose
+from hedge_fund.research.dossier import (
+    CONVICTION_THRESHOLD,
+    SYSTEM_PROMPT,
+    Dossier,
+    assemble_report,
+    build_dossier,
+    derive_action,
+)
 from hedge_fund.research.models import (
     FLAT_ACTIONS,
     HELD_ACTIONS,

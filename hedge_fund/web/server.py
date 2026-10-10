@@ -40,7 +40,7 @@ from pydantic import BaseModel, Field
 
 from hedge_fund import paths
 from hedge_fund.backtesting import backtest_fund
-from hedge_fund.data import CachedDataClient, FDClient
+from hedge_fund.data import open_cached_client
 from hedge_fund.fund import Fund, FundSpec, load_spec, load_strategy, normalize_universe
 from hedge_fund.llm import DEFAULT_MODEL, is_supported, load_api_models, make_llm
 from hedge_fund.llm.registry import PROVIDER_ENV_VARS
@@ -70,8 +70,10 @@ DEFAULT_PORT = 8787
 
 # Keys the settings page knows about, in display order.
 _KEY_LABELS: dict[str, str] = {
-    "FINANCIAL_DATASETS_API_KEY": "Financial Datasets (prices, fundamentals, filings)",
+    "FINANCIAL_DATASETS_API_KEY": "Financial Datasets (point-in-time prices, fundamentals, filings; optional — without it the fund reads Yahoo Finance)",
     "TAVILY_API_KEY": "Tavily (web search for research)",
+    "APCA_API_KEY_ID": "Alpaca paper key ID (funds on the alpaca-paper broker)",
+    "APCA_API_SECRET_KEY": "Alpaca paper secret key",
     **{env: f"{provider} (LLM)" for provider, env in PROVIDER_ENV_VARS.items()},
 }
 
@@ -300,7 +302,7 @@ def create_app() -> FastAPI:
             raise HTTPException(400, str(exc))
         if not targets:
             raise HTTPException(400, "no tickers given")
-        _require_keys("FINANCIAL_DATASETS_API_KEY", "TAVILY_API_KEY")
+        _require_keys("TAVILY_API_KEY")
         label = ", ".join(t.ticker for t in targets)
         job = Job("research", body.model_dump(), label)
 
@@ -309,8 +311,7 @@ def create_app() -> FastAPI:
                 llm = make_llm(body.model)
                 reports: list[ResearchReport] = []
                 failures: list[dict[str, str]] = []
-                with FDClient() as raw, TavilyClient() as search:
-                    fd = CachedDataClient(raw)
+                with open_cached_client() as fd, TavilyClient() as search:
                     for i, target in enumerate(targets):
                         progress({"i": i, "n": len(targets), "label": target.ticker})
                         try:
@@ -336,7 +337,8 @@ def create_app() -> FastAPI:
     @app.post("/api/cycle")
     def cycle(body: CycleRequest) -> dict[str, Any]:
         spec, universe = _fund_inputs(body)
-        _require_keys("FINANCIAL_DATASETS_API_KEY")
+        if spec.execution.broker == "alpaca-paper":
+            _require_keys("APCA_API_KEY_ID", "APCA_API_SECRET_KEY")
         try:  # refuse up front, not as a failed job, a run that breaks the chain
             carried_book(spec, body.as_of)
         except LedgerError as exc:
@@ -348,8 +350,8 @@ def create_app() -> FastAPI:
                 fund = Fund(spec)
                 progress({"label": f"{len(universe)} tickers x "
                           f"{sum(len(s) for _, s in fund.strategies)} models"})
-                with FDClient() as raw:
-                    ran = run_carried(fund, body.as_of, CachedDataClient(raw),
+                with open_cached_client() as fd:
+                    ran = run_carried(fund, body.as_of, fd,
                                       universe)
                 return {**ran.record.model_dump(),
                         "carried": ran.carry.describe(), "receipt": str(ran.path)}
@@ -359,7 +361,6 @@ def create_app() -> FastAPI:
     @app.post("/api/backtest")
     def backtest(body: BacktestRequest) -> dict[str, Any]:
         spec, universe = _fund_inputs(body)
-        _require_keys("FINANCIAL_DATASETS_API_KEY")
         start = body.start or (
             _date.fromisoformat(body.as_of) - timedelta(weeks=_BACKTEST_WEEKS)
         ).isoformat()
@@ -378,8 +379,8 @@ def create_app() -> FastAPI:
                     progress({"i": i + 1, "n": n, "label": record.as_of,
                               "dates": list(dates), "nav": list(nav)})
 
-                with FDClient() as raw:
-                    result = backtest_fund(fund, start, body.as_of, CachedDataClient(raw),
+                with open_cached_client() as fd:
+                    result = backtest_fund(fund, start, body.as_of, fd,
                                            universe, on_cycle=on_cycle)
                 return result.model_dump()
 
@@ -412,10 +413,9 @@ def create_app() -> FastAPI:
     @app.get("/api/scorecard")
     def scorecard(horizon: int = 90, benchmark: str = "SPY") -> dict[str, Any]:
         """Grade every saved report old enough to judge against forward returns."""
-        _require_keys("FINANCIAL_DATASETS_API_KEY")
         reports = load_reports(paths.RESEARCH_DIR)
-        with FDClient() as raw:
-            card = grade(reports, CachedDataClient(raw), horizon_days=horizon,
+        with open_cached_client() as fd:
+            card = grade(reports, fd, horizon_days=horizon,
                          benchmark=benchmark.upper())
         return card.model_dump()
 

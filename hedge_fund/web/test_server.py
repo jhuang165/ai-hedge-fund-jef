@@ -65,9 +65,8 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("FINANCIAL_DATASETS_API_KEY", "fd-key")
     monkeypatch.setenv("TAVILY_API_KEY", "tv-key")
     monkeypatch.delenv("HEDGE_FUND_LLM_MODEL", raising=False)
-    monkeypatch.setattr(server, "FDClient", _Ctx)
+    monkeypatch.setattr(server, "open_cached_client", _Ctx)
     monkeypatch.setattr(server, "TavilyClient", _Ctx)
-    monkeypatch.setattr(server, "CachedDataClient", lambda raw: raw)
     monkeypatch.setattr(server, "make_llm", lambda model=None: _LLM())
 
     def fake_diagnose(ticker, as_of, fd, search, llm, *, position=None):

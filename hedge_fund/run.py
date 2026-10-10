@@ -29,7 +29,13 @@ Usage::
         you say you hold), informed by fundamentals, price action, web
         search, and every systematic model's reading. Several tickers come
         back ranked. Does not touch mandates, strategies, or backtesting —
-        see hedge_fund/research/.
+        see hedge_fund/research/. With --dossier it gathers the evidence
+        and stops (no search or LLM key); --ingest FILE takes the finished
+        diagnosis back, validates it, saves it, and prints the report — the
+        loop Claude Code's /research skill runs with itself as the analyst.
+
+No data key is required: without FINANCIAL_DATASETS_API_KEY prices and
+fundamentals come from Yahoo Finance (see hedge_fund/data/source.py).
 
 A mandate is the desk — strategies, staff, risk, capital, cadence — and never
 names tickers; --tickers says what to point it at for this run.
@@ -53,7 +59,8 @@ from rich.console import Console
 from rich.table import Table
 
 from hedge_fund.backtesting import backtest_fund
-from hedge_fund.data import CachedDataClient, FDClient
+from hedge_fund.brokers import AlpacaError
+from hedge_fund.data import open_cached_client
 from hedge_fund.fund import Fund, load_spec, load_universe, normalize_universe
 from hedge_fund.paths import ENV_PATH, ensure_mandates_dir, ensure_universes_dir
 from hedge_fund.pipeline.ledger import LedgerError, run_carried
@@ -81,6 +88,11 @@ def main() -> None:
 
         web_main(sys.argv[2:])
         return
+    if len(sys.argv) > 1 and sys.argv[1] == "reporter":
+        from hedge_fund.reporter.server import main as reporter_main
+
+        reporter_main(sys.argv[2:])
+        return
 
     apply_credentials()
     ensure_mandates_dir()
@@ -99,7 +111,10 @@ def main() -> None:
         "  aihf validate MANDATE  hold-out split and parameter sweep of a\n"
         "                         mandate's backtest (see `aihf validate --help`)\n"
         "  aihf web [--port 8787] the local web app: research desk + fund runner\n"
-        "                         (see `aihf web --help`)",
+        "                         (see `aihf web --help`)\n"
+        "  aihf reporter          the hourly reporter: a web app that keeps a\n"
+        "                         cited brief fresh on every watched name\n"
+        "                         (see `aihf reporter --help`)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("mandate", nargs="?",
@@ -141,6 +156,12 @@ def main() -> None:
         "(default: HEDGE_FUND_LLM_MODEL env, else the built-in default); quant models "
         "ignore it",
     )
+    parser.add_argument(
+        "--adopt-account", action="store_true",
+        help="alpaca-paper funds only: let the fund's first paper run take over "
+        "an account that already holds positions — they become the fund's to "
+        "keep or sell",
+    )
     parser.add_argument("--out", help="also write the record JSON to this file")
     args = parser.parse_args()
 
@@ -173,8 +194,7 @@ def main() -> None:
         start = args.start or (
             _date.fromisoformat(args.date) - timedelta(weeks=_BACKTEST_WEEKS)
         ).isoformat()
-        with FDClient() as raw:
-            fd = CachedDataClient(raw)
+        with open_cached_client() as fd:
             with console.status(
                 f"[cyan]{spec.name}: backtesting {start} → {args.date} "
                 f"({spec.rebalance} rebalance vs {spec.benchmark}) "
@@ -214,8 +234,7 @@ def main() -> None:
             console.print(f"[bold yellow]  ⚠ {warning}[/]")
         return
 
-    with FDClient() as raw:
-        fd = CachedDataClient(raw)
+    with open_cached_client() as fd:
         n_models = sum(len(staff) for _, staff in fund.strategies)
         with console.status(
             f"[cyan]{spec.name}: running one cycle as of {args.date} — "
@@ -224,9 +243,13 @@ def main() -> None:
             spinner="dots",
         ):
             try:
-                ran = run_carried(fund, args.date, fd, universe)
+                ran = run_carried(fund, args.date, fd, universe,
+                                  adopt_account=args.adopt_account)
             except LedgerError as exc:
                 parser.error(str(exc))
+            except AlpacaError as exc:
+                console.print(f"[bold red]Alpaca: {exc}[/]")
+                sys.exit(1)
     record = ran.record
 
     print(record.model_dump_json(indent=2))
@@ -248,6 +271,8 @@ def main() -> None:
     )
     if record.skipped:
         console.print(f"[dim]skipped: {', '.join(s.ticker for s in record.skipped)}[/]")
+    for warning in record.warnings:
+        console.print(f"[bold yellow]  ⚠ {warning}[/]")
     console.print(f"[dim]{ran.carry.describe()}  ·  saved to {ran.path}[/]")
 
 
@@ -295,7 +320,28 @@ def _research_main(argv: list[str]) -> None:
         help="as-of date YYYY-MM-DD (default: today)",
     )
     parser.add_argument("--out", help="also write the report JSON to this file")
+    parser.add_argument(
+        "--dossier",
+        action="store_true",
+        help="gather the evidence only — fundamentals, price action, the desk "
+        "readout, the marked position, the prompt and the search queries — "
+        "and print it as JSON. Needs no search or LLM key; a reasoner outside "
+        "this process (Claude Code, say) searches and answers, then hands the "
+        "answer back with --ingest",
+    )
+    parser.add_argument(
+        "--ingest",
+        metavar="FILE",
+        help="a finished diagnosis (the JSON the dossier's prompt asks for, "
+        "plus its `sources` and the `dossier` it was built from) to validate, "
+        "save under ~/.hedge-fund/research/, and print as a report. A list "
+        "ingests several",
+    )
     args = parser.parse_args(argv)
+
+    if args.ingest:
+        _ingest_research(args)
+        return
 
     from hedge_fund.research import load_portfolio, merge_targets, parse_target
 
@@ -307,6 +353,10 @@ def _research_main(argv: list[str]) -> None:
     targets = merge_targets(from_file, given)
     if not targets:
         parser.error("nothing to research — give at least one ticker or --portfolio FILE")
+
+    if args.dossier:
+        _print_dossiers(args, targets)
+        return
 
     # Check the search key up front. Without it every query comes back 401
     # and the user sees four stacked HTTP errors instead of the one sentence
@@ -327,8 +377,7 @@ def _research_main(argv: list[str]) -> None:
     reports: list[ResearchReport] = []
     failures: list[tuple[str, Exception]] = []
 
-    with FDClient() as raw, TavilyClient() as search:
-        fd = CachedDataClient(raw)
+    with open_cached_client() as fd, TavilyClient() as search:
         for i, target in enumerate(targets, 1):
             label = target.ticker
             if target.position is not None:
@@ -375,6 +424,111 @@ def _research_main(argv: list[str]) -> None:
                          + ", ".join(t for t, _ in failures))
 
 
+def _print_dossiers(args, targets) -> None:
+    """`aihf research ... --dossier`: the evidence as JSON on stdout, one
+    object per target (a bare object for a single target). Each carries the
+    dossier itself, the prompt the LLM path would send, the search queries
+    it would run, and the action vocabulary the answer must use."""
+    from hedge_fund.research import SYSTEM_PROMPT, build_dossier
+
+    console = Console(stderr=True)
+    out: list[dict] = []
+    with open_cached_client() as fd:
+        for i, target in enumerate(targets, 1):
+            with console.status(
+                f"[cyan]gathering {target.ticker} as of {args.date}"
+                + (f"  [{i}/{len(targets)}]" if len(targets) > 1 else "") + "…",
+                spinner="dots",
+            ):
+                dossier = build_dossier(target.ticker, args.date, fd, position=target.position)
+            out.append({
+                "ticker": dossier.ticker,
+                "as_of": dossier.as_of,
+                "held": dossier.held,
+                "allowed_actions": list(dossier.allowed_actions),
+                "queries": dossier.queries,
+                "prompt": {"system": SYSTEM_PROMPT, "user": dossier.render()},
+                "dossier": dossier.model_dump(mode="json"),
+            })
+            for w in dossier.warnings:
+                console.print(f"[yellow]{dossier.ticker}: warning: {w}[/]")
+    payload = json.dumps(out[0] if len(out) == 1 else out, indent=2)
+    print(payload)
+    if args.out:
+        Path(args.out).write_text(payload)
+
+
+def _ingest_research(args) -> None:
+    """`aihf research --ingest FILE`: validate a diagnosis written outside
+    this process, save it like any other report, and print it.
+
+    Each item is the answer JSON the prompt asks for (signal, confidence,
+    action_rationale, thesis, catalysts, risks; `action` optional, filled by
+    policy when absent) plus `sources` (query/title/url/content each),
+    `model` (who reasoned), and the `dossier` object a --dossier run
+    printed. An item without a dossier names a `ticker` (and optionally a
+    `position` of shares/cost_basis) and the evidence is gathered afresh.
+    """
+    from hedge_fund.research import (
+        Dossier,
+        Position,
+        SearchResult,
+        assemble_report,
+        build_dossier,
+        save_report,
+    )
+
+    try:
+        raw = json.loads(Path(args.ingest).read_text())
+    except (OSError, ValueError) as exc:
+        raise SystemExit(f"cannot read {args.ingest}: {exc}")
+    items = raw if isinstance(raw, list) else [raw]
+    if not items:
+        raise SystemExit(f"{args.ingest}: nothing to ingest")
+
+    console = Console(stderr=True)
+    reports: list[ResearchReport] = []
+    with open_cached_client() as fd:
+        for item in items:
+            if not isinstance(item, dict):
+                raise SystemExit(f"{args.ingest}: each item must be an object, got {type(item).__name__}")
+            try:
+                if item.get("dossier"):
+                    dossier = Dossier(**item["dossier"])
+                else:
+                    ticker = str(item.get("ticker") or "").upper()
+                    if not ticker:
+                        raise ValueError("an item without a dossier needs a ticker")
+                    pos = item.get("position")
+                    position = Position(ticker=ticker, **pos) if pos else None
+                    dossier = build_dossier(ticker, item.get("as_of") or args.date, fd, position=position)
+                sources = [SearchResult(**s) for s in item.get("sources") or []]
+                report = assemble_report(
+                    dossier,
+                    sources=sources,
+                    queries=list(item.get("queries") or dossier.queries),
+                    answer=item,
+                    model=str(item.get("model") or args.model or "claude-code"),
+                )
+            except (ValueError, TypeError) as exc:
+                raise SystemExit(f"{item.get('ticker', '?')}: invalid answer: {exc}")
+            path = save_report(report)
+            console.print(f"[dim]saved {path}[/]")
+            reports.append(report)
+
+    ranked = sorted(reports, key=lambda r: r.score, reverse=True)
+    payload = ranked[0].model_dump_json(indent=2) if len(ranked) == 1 else (
+        "[" + ",\n".join(r.model_dump_json(indent=2) for r in ranked) + "]"
+    )
+    print(payload)
+    if args.out:
+        Path(args.out).write_text(payload)
+    if len(ranked) == 1:
+        _print_research_summary(console, ranked[0])
+    else:
+        _print_research_table(console, ranked)
+
+
 def _scorecard_main(argv: list[str]) -> None:
     parser = argparse.ArgumentParser(
         prog="aihf scorecard",
@@ -400,8 +554,7 @@ def _scorecard_main(argv: list[str]) -> None:
     reports = load_reports(Path(args.dir) if args.dir else None)
     if not reports:
         raise SystemExit("no saved research reports to grade — run `aihf research` first")
-    with FDClient() as raw:
-        fd = CachedDataClient(raw)
+    with open_cached_client() as fd:
         with console.status(f"[cyan]grading {len(reports)} reports…", spinner="dots"):
             card = grade(reports, fd, horizon_days=args.horizon,
                          benchmark=args.benchmark.upper(), as_of=args.date)
@@ -488,8 +641,7 @@ def _validate_main(argv: list[str]) -> None:
 
     console = Console(stderr=True)
     payload: dict = {}
-    with FDClient() as raw:
-        fd = CachedDataClient(raw)
+    with open_cached_client() as fd:
         with console.status(f"[cyan]{spec.name}: hold-out {start} | {split} | {args.date}…",
                             spinner="dots"):
             payload["holdout"] = holdout(Fund(spec), start, split, args.date, fd, universe)

@@ -1,0 +1,11 @@
+# Codex CLI config for the reporter's wrapper container ($CODEX_HOME/config.toml).
+# Sits next to auth.json (your `codex login` credentials; that file is git-ignored).
+model = "gpt-6-luna"
+model_reasoning_effort = "medium"
+
+# Live web search: the brief's news comes from the model searching itself.
+web_search = "live"
+
+# `codex exec` runs non-interactively; the wrapper also forces read-only per call.
+sandbox_mode = "read-only"
+approval_policy = "never"

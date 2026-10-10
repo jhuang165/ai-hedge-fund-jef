@@ -61,3 +61,4 @@ class CycleRecord(BaseModel):
     cash: float
     nav: float                          # cash + sum(shares * mark)
     costs: float = 0.0                  # commission + slippage paid this cycle, already out of cash
+    warnings: list[str] = []            # what the ledger found worth flagging, e.g. a broker book that drifted from the last receipt
